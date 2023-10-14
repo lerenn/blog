@@ -5,7 +5,7 @@ baseURL = 'http://blog.louisfradin.com/'
 title = 'Louis FRADIN'
 
 # This is what goes in <html lang="">
-languageCode = 'en-us'
+languageCode = 'en-US'
 
 # Theme used
 theme = "hugo-blog-awesome"
