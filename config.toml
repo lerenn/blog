@@ -22,7 +22,7 @@ enableEmoji = true
 
 # To enable Disqus comments, provide Disqus Shortname below.
 # To disable Disqus comments, simply leave the field empty or remove the next line
-disqusShortname = ''
+disqusShortname = 'louisfradin'
 
 # set markup.highlight.noClasses=false to enable code highlight
 [markup]
