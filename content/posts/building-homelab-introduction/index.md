@@ -8,9 +8,9 @@ categories: ["homelab", "networking"]
 
 ## The Journey Begins: From Chaos to Order
 
-I've always been fascinated by infrastructure and automation. What started as a 
-simple gaming PC running Fedora Linux with a few VMs has evolved into a 
-full-scale homelab project. This series of blog posts documents my journey from 
+I've always been fascinated by infrastructure and automation. What started as a
+simple gaming PC running Fedora Linux with a few VMs has evolved into a
+full-scale homelab project. This series of blog posts documents my journey from
 a basic setup to a properly segmented, Kubernetes-based infrastructure.
 
 ## Current Setup: A Gaming PC with VMs
@@ -24,7 +24,7 @@ My current setup is humble but functional:
 
 - **Raspberry Pi Fleet**:
   - **Old Pi**: Converting a 15-year-old laser printer into a WiFi printer
-  - **Pi 5**: HomeAssistant for smart home automation (Philips Hue, 
+  - **Pi 5**: HomeAssistant for smart home automation (Philips Hue,
     electrical sockets, A/C, surveillance cameras)
 
 - **Remote Access**: VPN solution for external connectivity
@@ -33,41 +33,46 @@ Everything was managed through Ansible scripts, but there was a fundamental prob
 
 ## The Problem: Security and Isolation
 
-Having IoT devices (surveillance cameras, smart plugs, A/C units) on the same 
-network as my development infrastructure was a security nightmare. These devices 
+Having IoT devices (surveillance cameras, smart plugs, A/C units) on the same
+network as my development infrastructure was a security nightmare. These devices
 are often:
+
 - Running outdated firmware
 - Have unknown security vulnerabilities
 - Can't be easily updated or monitored
 - Could potentially be used as entry points to the rest of the network
 
-I needed proper network segmentation, but I don't want to rely on my ISP router 
+I needed proper network segmentation, but I don't want to rely on my ISP router
 for this as I may move or change my ISP provider.
 
 ## The Vision: Kubernetes-First Homelab
 
-The goal is clear: migrate to a Kubernetes-based homelab where services run as 
+The goal is clear: migrate to a Kubernetes-based homelab where services run as
 containers rather than VMs. This will provide:
+
 - Better resource utilization
 - Easier service management
 - Modern deployment patterns
 - Scalability and flexibility
 
 To support this vision, I have invested in:
+
 - **3x Mini PCs**: Specified for Kubernetes cluster deployment
 - Perfect as a starting point for a Talos Linux Kubernetes cluster
 
 ## The Network Challenge: VLAN Segmentation
 
-Before deploying Kubernetes, I need to solve the network segmentation problem. 
+Before deploying Kubernetes, I need to solve the network segmentation problem.
 The solution involves:
 
 ### Hardware Acquisition
+
 - **OpenWRT Router**: For VLAN management and network segmentation
 - **Managed Switch**: For 802.1q VLAN trunking and port assignment
 
 ### Planned Network Architecture
-The OpenWRT router will create all VLANs and send traffic to the managed switch via 
+
+The OpenWRT router will create all VLANs and send traffic to the managed switch via
 port 1 (trunk). The switch will then assign appropriate VLANs to different ports:
 
 ```mermaid
@@ -104,7 +109,6 @@ graph TD
     IoTWiFi --> IoTDevices
 ```
 
-
 ## The Implementation Plan
 
 This series will document the implementation of:
@@ -137,6 +141,7 @@ This series will document the implementation of:
 ## Why Document This Journey?
 
 This isn't just about building a homelab—it's about:
+
 - **Learning**: Understanding network segmentation and security
 - **Automation**: Infrastructure as Code with Ansible
 - **Modern Practices**: Kubernetes-native service deployment
@@ -145,13 +150,13 @@ This isn't just about building a homelab—it's about:
 
 ## What's Next?
 
-In the next post, we'll dive into the actual network configuration, starting 
-with the OpenWRT router setup and VLAN creation. We'll cover the challenges 
-of working with OpenWRT, router limitations, and how to properly configure 
+In the next post, we'll dive into the actual network configuration, starting
+with the OpenWRT router setup and VLAN creation. We'll cover the challenges
+of working with OpenWRT, router limitations, and how to properly configure
 the managed switch for VLAN trunking.
 
-This will be a real-time documentation of the implementation process, complete 
-with Ansible playbooks, configuration files, and the inevitable troubleshooting 
+This will be a real-time documentation of the implementation process, complete
+with Ansible playbooks, configuration files, and the inevitable troubleshooting
 that comes with network infrastructure projects!
 
 ## Next Steps
@@ -164,6 +169,6 @@ In the next post, we'll cover the detailed implementation of VLAN segmentation, 
 
 ---
 
-*This is the first post in a series about building a secure, Kubernetes-based 
-homelab. Follow along as we transform a basic setup into a production-ready 
+*This is the first post in a series about building a secure, Kubernetes-based
+homelab. Follow along as we transform a basic setup into a production-ready
 infrastructure with proper network segmentation and automation.*

@@ -16,11 +16,13 @@ Dagger is a modern CI/CD engine that allows you to write your pipelines as code.
 ## The Problem: Docker Hub Rate Limiting
 
 When running CI/CD pipelines with Dagger, each build typically pulls multiple Docker images from Docker Hub:
+
 - Base images: `golang:1.21`, `node:18`, `python:3.11`
 - Build tools: `alpine:latest`, `ubuntu:20.04`
 - Custom images: Your application images
 
 **The Challenge:**
+
 - Docker Hub has rate limits (200 pulls per 6 hours for anonymous users)
 - Each CI/CD run pulls the same images repeatedly
 - Build times increase as images are downloaded each time
@@ -32,7 +34,7 @@ Instead of pulling images directly from Docker Hub, we'll deploy a local Docker 
 
 ### Architecture
 
-```
+```text
 ┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
 │   CI/CD Pipeline│    │  Dagger Engine   │    │ Docker Registry │
 │                 │    │                  │    │     Mirror      │
@@ -193,12 +195,14 @@ kubectl get pods -n dagger
 ## Performance Benefits
 
 ### Before (Direct Docker Hub)
+
 - **First build**: Slow (download images from Docker Hub)
 - **Subsequent builds**: Slow (re-download same images)
 - **Rate limiting**: Pipeline failures after 200 pulls
 - **Network usage**: High bandwidth consumption
 
 ### After (Registry Mirror)
+
 - **First build**: Same speed (download and cache images)
 - **Subsequent builds**: Much faster (serve from local cache)
 - **Rate limiting**: Eliminated (local cache)
@@ -226,6 +230,7 @@ jobs:
 ```
 
 This approach:
+
 - Pulls images for each step
 - No caching between builds
 - Hits Docker Hub rate limits
@@ -253,6 +258,7 @@ jobs:
 ```
 
 This approach:
+
 - Reuses cached images
 - Faster build times
 - No Docker Hub rate limit issues
@@ -292,8 +298,6 @@ kubectl logs -n dagger deployment/dagger-engine
 kubectl exec -n dagger deployment/dagger-engine -- cat /etc/buildkit/buildkitd.toml
 ```
 
-
-
 ## Security Considerations
 
 1. **Internal Only**: Registry is accessible only within the cluster
@@ -306,10 +310,11 @@ kubectl exec -n dagger deployment/dagger-engine -- cat /etc/buildkit/buildkitd.t
 This solution provides a robust way to speed up CI/CD pipelines while avoiding Docker Hub rate limits. The Docker registry mirror acts as an intelligent cache layer, automatically storing frequently used images and serving them locally.
 
 **Key Benefits:**
+
 - Eliminates Docker Hub rate limiting
 - Speeds up builds significantly
 - No changes required in CI/CD pipelines
 - Persistent cache survives pod restarts
 - Transparent to users
 
-The combination of Dagger Engine for build orchestration and Docker registry mirror for image caching creates a powerful, self-contained CI/CD infrastructure that's both fast and reliable. 
+The combination of Dagger Engine for build orchestration and Docker registry mirror for image caching creates a powerful, self-contained CI/CD infrastructure that's both fast and reliable.
