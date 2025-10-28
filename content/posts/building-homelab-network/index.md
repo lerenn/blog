@@ -6,8 +6,6 @@ tags: ["homelab", "networking", "vlan", "openwrt", "security", "infrastructure",
 categories: ["homelab", "networking"]
 ---
 
-# Building a Kubernetes Homelab: My Journey from ISP Router to VLAN-Segmented Network
-
 *This is the second post in our "Building a Kubernetes Homelab" series. If you haven't read the [first post](/posts/homelab-network-vlan-setup/) yet, I recommend starting there for the full context of this project.*
 
 ## The Beginning: A Dream and a Plan
@@ -27,6 +25,7 @@ I started with what seemed like a reasonable choice: a budget OpenWRT-compatible
 The first red flag came when I tried to configure it through SSH. The router would accept my configuration changes, everything would work perfectly... until I rebooted it. Then it would reset to factory defaults, losing everything I had painstakingly configured.
 
 I spent hours troubleshooting this issue. I tried:
+
 - Disabling proprietary GL.iNet services (repeater, gl-config)
 - Force remounting the overlay filesystem as read-write
 - Multiple sync operations and cache clearing
@@ -45,6 +44,7 @@ I was fighting against the fundamental architecture of the device. No amount of 
 I had to face the music: I needed different hardware. After researching alternatives, I ordered a **mid-range OpenWRT router** which supports flashing with vanilla OpenWRT firmware.
 
 This was a significant investment, but I was committed to doing this right. The new router would give me:
+
 - Full control over configuration persistence
 - Standard UCI commands working as expected
 - No proprietary service interference
@@ -125,6 +125,7 @@ This seemed logical, but I quickly discovered that **order matters**. When I con
 ### The Breakthrough: Router First, Then Switch
 
 After several frustrating attempts, I learned the correct sequence:
+
 1. **Router VLANs**: Configure all VLAN interfaces and bridges on the router
 2. **Switch VLANs**: Configure the managed switch with proper trunk and access ports
 3. **Testing**: Validate connectivity and DHCP functionality
@@ -178,6 +179,7 @@ This process was fragile and required multiple attempts, but it was essential fo
 The next challenge was finding the correct hardware paths for the GL-MT3000's WiFi radios. The standard OpenWRT paths didn't work, and I spent considerable time experimenting with different configurations.
 
 Eventually, I discovered the correct paths:
+
 - 2.4GHz: `platform/soc/xxxxx.wifi`
 - 5GHz: `platform/soc/xxxxx.wifi+1`
 
@@ -207,11 +209,13 @@ This was a critical issue that indicated DHCP wasn't working for WiFi clients on
 
 I spent days investigating this issue. The problem had multiple components:
 
-**Issue 1: DNSMasq Service Restart**
+#### Issue 1: DNSMasq Service Restart
+
 - DNSMasq wasn't automatically restarting after DHCP configuration changes
 - VLAN DHCP ranges weren't being generated in the DNSMasq configuration file
 
-**Issue 2: WiFi VLAN Bridging**
+#### Issue 2: WiFi VLAN Bridging
+
 - WiFi interfaces were not properly bridged to VLAN interfaces
 - VLAN interfaces were configured directly on `eth1.27`, `eth1.28`, etc.
 - WiFi clients couldn't communicate with DHCP servers on VLAN interfaces
@@ -221,6 +225,7 @@ I spent days investigating this issue. The problem had multiple components:
 The breakthrough came when I realized I needed to create bridges for each VLAN network. Instead of configuring VLAN interfaces directly, I needed to bridge them:
 
 **Before (broken configuration):**
+
 ```yaml
 config interface 'vlan20'
     option proto 'static'
@@ -230,6 +235,7 @@ config interface 'vlan20'
 ```
 
 **After (working configuration):**
+
 ```yaml
 config device
     option name 'br-vlan20'
@@ -252,6 +258,7 @@ This change, combined with automatic DNSMasq restarts, finally made DHCP work fo
 Even with VLAN bridges working, I was still getting APIPA addresses. The issue was with my firewall configuration syntax. After analyzing the original OpenWRT firewall configuration, I discovered several critical syntax differences:
 
 **Key Issues Found:**
+
 1. **Network List Format**: Used `option network 'lan'` instead of `list network 'lan'`
 2. **ICMP Type Format**: Used `option icmp_type` with space-separated values instead of `list icmp_type`
 3. **Conflicting Rules**: Added unnecessary `wan→lan` forwarding that broke Management VLAN connectivity
@@ -289,6 +296,7 @@ This was the final piece of the puzzle. With correct firewall syntax, DHCP final
 With the network infrastructure working, I could finally start connecting real devices. The first was my HomeAssistant instance, which I wanted on the IoT VLAN.
 
 This was relatively straightforward:
+
 - Connected HomeAssistant to the IoT Ethernet network
 - Configured static DHCP lease with MAC address `aa:bb:cc:dd:ee:ff`
 - Set up firewall rules to allow Management, Lab, Devices, and Guest VLANs to access IoT VLAN
@@ -474,6 +482,7 @@ config forwarding
 ```
 
 This ensured that:
+
 - **VPN users** could only access the Lab VLAN
 - **Management VLAN** could access VPN for administration
 - **All other VLANs** remained isolated from VPN access
