@@ -335,6 +335,49 @@ The PXE system automatically handles node identification via MAC address and ser
 
 ### Re-installing or Upgrading Nodes
 
+**Reinstalling a node with full cluster cleanup:**
+
+```bash
+# Reinstall lenovo1 (automatically handles node deletion, draining, and PXE boot)
+./machines/scripts/reinstall-node.sh lenovo1
+```
+
+The `reinstall-node.sh` script automates the complete reinstallation process:
+
+1. **Deletes the node from the Kubernetes cluster** (if it exists)
+   - Safely drains pods first using `kubectl drain`
+   - Removes the node from the cluster
+   - Warns about potential stale etcd member entries for control plane nodes
+
+2. **Configures PXE boot on the target machine**
+   - Detects IPv4 and IBA CL PXE boot entries automatically
+   - Sets appropriate boot order (IPv4 first, IBA CL second if available)
+   - Configures `BootNext` for immediate PXE boot
+   - Reboots the machine
+
+3. **Cleans up SSH host keys**
+   - Removes old SSH host keys from `~/.ssh/known_hosts` by hostname
+   - Resolves the node's IP using the `host` command
+   - Removes SSH host keys by IP to avoid host key verification errors after reinstall
+
+**How the SSH host key cleanup works:**
+
+```bash
+# Remove by hostname
+ssh-keygen -R "${TARGET}" -f ~/.ssh/known_hosts 2>/dev/null || true
+
+# Resolve IP using host command and remove by IP
+NODE_IP=$(host "${TARGET}" 2>/dev/null | grep "has address" | awk '{print $4}' | head -1)
+if [ -n "$NODE_IP" ]; then
+    ssh-keygen -R "${NODE_IP}" -f ~/.ssh/known_hosts 2>/dev/null || true
+    log "Removed SSH keys for ${TARGET} (${NODE_IP})"
+fi
+```
+
+This ensures that after a reinstall, when the node comes back with a fresh SSH host key, you won't encounter host key verification errors. The script uses the `host` command for IP resolution, which works reliably across different platforms.
+
+**Note for control plane nodes:** If you encounter "duplicate node name" errors when a control plane node tries to rejoin, you may need to manually remove the stale etcd member entry. The script warns you about this possibility.
+
 **Forcing PXE boot on a node:**
 
 ```bash
