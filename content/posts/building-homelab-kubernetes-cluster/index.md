@@ -378,6 +378,41 @@ This ensures that after a reinstall, when the node comes back with a fresh SSH h
 
 **Note for control plane nodes:** If you encounter "duplicate node name" errors when a control plane node tries to rejoin, you may need to manually remove the stale etcd member entry. The script warns you about this possibility.
 
+**Forcing PXE boot on a node:**
+
+```bash
+# Trigger one-time PXE boot on lenovo1
+./machines/scripts/trigger-pxe-boot.sh 192.168.X.5
+
+# Or by hostname
+./machines/scripts/trigger-pxe-boot.sh lenovo1.lab.internal
+```
+
+This script:
+
+- Detects the PXE IPv4 boot entry automatically
+- Sets `BootNext` for one-time PXE boot
+- Reboots the machine immediately
+- Only affects the next boot; subsequent boots use the local disk
+
+**How the trigger script works:**
+
+```bash
+#!/bin/bash
+TARGET="$1"
+
+# Detect PXE boot entry via SSH
+PXE_ENTRY=$(ssh core@${TARGET} 'sudo efibootmgr -v | grep -i "UEFI:.*IPV4" | head -1 | sed "s/Boot\([0-9A-F]*\).*/\1/"')
+
+# Set next boot to PXE
+ssh core@${TARGET} "sudo efibootmgr -n $PXE_ENTRY"
+
+# Reboot immediately
+ssh core@${TARGET} "sudo reboot"
+```
+
+The script uses UEFI's `BootNext` mechanism to force a one-time PXE boot without permanently changing the boot order. After the PXE installation completes, the system will boot normally from local disk on subsequent boots.
+
 ### Accessing the Cluster
 
 **Fetching kubeconfig for local kubectl access:**
