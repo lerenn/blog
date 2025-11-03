@@ -570,39 +570,6 @@ The cluster is up, the foundation is solid, and this time it feels maintainable.
 - Migrate services (HomeAssistant, monitoring, and more)
 - Implement automated cluster scaling and node replacement
 
-## Longhorn Storage: Classes, Placement, and Safety
-
-I added Longhorn for distributed storage and codified how data is placed per logical cluster (foundation, cryptellation, perso).
-
-### Helm values that matter
-
-- Reserve CPU for stability (millicores as strings):
-  - `guaranteedEngineManagerCPU: "250"`
-  - `guaranteedReplicaManagerCPU: "250"`
-- Force explicit StorageClass choice:
-  - `persistence.defaultClass: false`
-
-### StorageClasses
-
-All classes set `allowVolumeExpansion: true` and `volumeBindingMode: WaitForFirstConsumer`.
-
-- `longhorn-foundation-delete` (labels: `cluster: foundation`)
-  - replicas: "1" (space‑efficient), reclaimPolicy: Delete
-- `longhorn-cryptellation-delete` / `longhorn-cryptellation-retain` (labels: `cluster: cryptellation`)
-  - replicas: "3", `parameters.nodeSelector: cryptellation`
-- `longhorn-perso-delete` / `longhorn-perso-retain` (labels: `cluster: perso`)
-  - replicas: "3", `parameters.nodeSelector: perso`
-
-Longhorn node tags (`cryptellation`, `perso`) ensure replicas are placed only on intended nodes.
-
-### Rules of thumb
-
-- Rebuildable/throwaway: Delete + 1 replica
-- Should persist while running but OK to clean up on uninstall: Delete + 3 replicas
-- Must not be lost: Retain + 3 replicas
-
-Optional per‑class tuning: `staleReplicaTimeout` (default ~30m). Lower for fast failover CI, higher for flaky/edge nodes.
-
 ---
 
 If you want the blow‑by‑blow of the CNI detour and how I landed on the built‑in approach, I captured the full troubleshooting path below for future me (and anyone else who needs it).
