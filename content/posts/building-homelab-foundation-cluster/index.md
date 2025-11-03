@@ -79,13 +79,13 @@ For a homelab, Layer 2 mode is simpler and perfectly adequate. MetalLB:
 I decided to use a single Virtual IP (VIP) as the entry point for all cluster services:
 
 ```text
-192.168.26.254 → cluster.lab.home.lerenn.net
+192.168.X.254 → cluster.lab.x.y.z
 ```
 
 This VIP becomes the single point of entry. All services get DNS CNAMEs that point to this VIP:
 
 ```text
-longhorn.lab.home.lerenn.net → CNAME → cluster.lab.home.lerenn.net
+longhorn.lab.x.y.z → CNAME → cluster.lab.x.y.z
 (traefik dashboard would be the same)
 ```
 
@@ -111,7 +111,7 @@ metadata:
   namespace: metallb-system
 spec:
   addresses:
-  - 192.168.26.254/32
+  - 192.168.X.254/32
 
 ---
 apiVersion: metallb.io/v1beta1
@@ -203,14 +203,14 @@ longhorn_version: v1.5.3
 longhorn_data_path: /var/lib/longhorn
 longhorn_replica_count: 3
 longhorn_ingress_enabled: true
-longhorn_ingress_host: longhorn.lab.home.lerenn.net
+longhorn_ingress_host: longhorn.lab.x.y.z
 longhorn_ingress_class: traefik
 ```
 
 The key decisions here:
 
 - **Replica count of 3**: With three nodes, storing three replicas means each node has one copy. This provides redundancy if one node fails.
-- **Ingress enabled**: Access Longhorn UI through Traefik at `longhorn.lab.home.lerenn.net`
+- **Ingress enabled**: Access Longhorn UI through Traefik at `longhorn.lab.x.y.z`
 - **Data path**: Store Longhorn data on dedicated HDDs (separate from the OS SSDs on each node)
 
 ### Custom Storage Classes
@@ -313,13 +313,13 @@ With services deployed, we needed DNS resolution. The OpenWRT router's DNSmasq c
 ```bash
 # A record for the cluster VIP
 config domain
-  option name 'cluster.lab.home.lerenn.net'
-  option ip '192.168.26.254'
+  option name 'cluster.lab.x.y.z'
+  option ip '192.168.X.254'
 
 # CNAME for each service
 config cname
-  option cname 'longhorn.lab.home.lerenn.net'
-  option target 'cluster.lab.home.lerenn.net'
+  option cname 'longhorn.lab.x.y.z'
+  option target 'cluster.lab.x.y.z'
 ```
 
 This allows accessing services by their friendly hostnames while only managing one actual IP address.

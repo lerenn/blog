@@ -335,40 +335,48 @@ The PXE system automatically handles node identification via MAC address and ser
 
 ### Re-installing or Upgrading Nodes
 
-**Forcing PXE boot on a node:**
+**Reinstalling a node with full cluster cleanup:**
 
 ```bash
-# Trigger one-time PXE boot on lenovo1
-./machines/scripts/trigger-pxe-boot.sh 192.168.X.5
-
-# Or by hostname
-./machines/scripts/trigger-pxe-boot.sh lenovo1.lab.internal
+# Reinstall lenovo1 (automatically handles node deletion, draining, and PXE boot)
+./machines/scripts/reinstall-node.sh lenovo1
 ```
 
-This script:
+The `reinstall-node.sh` script automates the complete reinstallation process:
 
-- Detects the PXE IPv4 boot entry automatically
-- Sets `BootNext` for one-time PXE boot
-- Reboots the machine immediately
-- Only affects the next boot; subsequent boots use the local disk
+1. **Deletes the node from the Kubernetes cluster** (if it exists)
+   - Safely drains pods first using `kubectl drain`
+   - Removes the node from the cluster
+   - Warns about potential stale etcd member entries for control plane nodes
 
-**How the trigger script works:**
+2. **Configures PXE boot on the target machine**
+   - Detects IPv4 and IBA CL PXE boot entries automatically
+   - Sets appropriate boot order (IPv4 first, IBA CL second if available)
+   - Configures `BootNext` for immediate PXE boot
+   - Reboots the machine
+
+3. **Cleans up SSH host keys**
+   - Removes old SSH host keys from `~/.ssh/known_hosts` by hostname
+   - Resolves the node's IP using the `host` command
+   - Removes SSH host keys by IP to avoid host key verification errors after reinstall
+
+**How the SSH host key cleanup works:**
 
 ```bash
-#!/bin/bash
-TARGET="$1"
+# Remove by hostname
+ssh-keygen -R "${TARGET}" -f ~/.ssh/known_hosts 2>/dev/null || true
 
-# Detect PXE boot entry via SSH
-PXE_ENTRY=$(ssh core@${TARGET} 'sudo efibootmgr -v | grep -i "UEFI:.*IPV4" | head -1 | sed "s/Boot\([0-9A-F]*\).*/\1/"')
-
-# Set next boot to PXE
-ssh core@${TARGET} "sudo efibootmgr -n $PXE_ENTRY"
-
-# Reboot immediately
-ssh core@${TARGET} "sudo reboot"
+# Resolve IP using host command and remove by IP
+NODE_IP=$(host "${TARGET}" 2>/dev/null | grep "has address" | awk '{print $4}' | head -1)
+if [ -n "$NODE_IP" ]; then
+    ssh-keygen -R "${NODE_IP}" -f ~/.ssh/known_hosts 2>/dev/null || true
+    log "Removed SSH keys for ${TARGET} (${NODE_IP})"
+fi
 ```
 
-The script uses UEFI's `BootNext` mechanism to force a one-time PXE boot without permanently changing the boot order. After the PXE installation completes, the system will boot normally from local disk on subsequent boots.
+This ensures that after a reinstall, when the node comes back with a fresh SSH host key, you won't encounter host key verification errors. The script uses the `host` command for IP resolution, which works reliably across different platforms.
+
+**Note for control plane nodes:** If you encounter "duplicate node name" errors when a control plane node tries to rejoin, you may need to manually remove the stale etcd member entry. The script warns you about this possibility.
 
 ### Accessing the Cluster
 
