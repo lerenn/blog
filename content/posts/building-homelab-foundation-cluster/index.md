@@ -207,39 +207,85 @@ longhorn_ingress_host: longhorn.lab.x.y.z
 longhorn_ingress_class: traefik
 ```
 
+The Helm values file configures Longhorn's default settings:
+
+```yaml
+# cluster/roles/longhorn/templates/values.yaml.j2
+defaultSettings:
+  defaultDataPath: {{ longhorn_data_path }}
+  defaultReplicaCount: {{ longhorn_replica_count }}
+  guaranteedEngineManagerCPU: "250"
+  guaranteedReplicaManagerCPU: "250"
+  storageReservedPercentageForDefaultDisk: "5"
+```
+
 The key decisions here:
 
 - **Replica count of 3**: With three nodes, storing three replicas means each node has one copy. This provides redundancy if one node fails.
+- **Storage reserved percentage**: Set to 5% (instead of the default 30%) to maximize available storage for volumes. This is important because Longhorn reserves space for system operations and to prevent over-provisioning.
 - **Ingress enabled**: Access Longhorn UI through Traefik at `longhorn.lab.x.y.z`
 - **Data path**: Store Longhorn data on dedicated HDDs (separate from the OS SSDs on each node)
 
-### Custom Storage Classes
+### Disk Tagging
 
-Longhorn comes with a default storage class, but we created additional ones for future specialized clusters:
+Since our nodes have dedicated HDD disks for Longhorn storage (mounted at `/var/lib/longhorn`), we tag them with `longhorn-hdd-raw` to ensure they're reserved for Longhorn use. The Ansible playbook automatically applies these tags:
 
 ```yaml
-# Single-replica for non-critical data
-apiVersion: storage.k8s.io/v1
-kind: StorageClass
+# cluster/roles/longhorn/templates/node-disk-tags.yaml.j2
+apiVersion: longhorn.io/v1beta2
+kind: Node
 metadata:
-  name: longhorn-single-replica
-provisioner: driver.longhorn.io
-parameters:
-  numberOfReplicas: "1"
-
-# Tagged for projectX specialized cluster
-apiVersion: storage.k8s.io/v1
-kind: StorageClass
-metadata:
-  name: longhorn-projectX
-  labels:
-    cluster: projectX
-provisioner: driver.longhorn.io
-parameters:
-  numberOfReplicas: "3"
+  name: {{ node_item.name }}
+  namespace: {{ longhorn_namespace }}
+spec:
+  disks:
+    "{{ node_item.disk_key }}":
+      tags:
+        - longhorn-hdd-raw
 ```
 
-This allows specialized clusters to use specific storage classes that are tagged for their namespace, even though the storage itself runs at the foundation layer.
+The tag uses a `longhorn-` prefix for clarity, making it explicit that these disks are reserved for Longhorn storage.
+
+### Custom Storage Classes
+
+Longhorn comes with a default storage class, but we created custom ones with disk selectors to ensure volumes are only created on our tagged HDD disks:
+
+```yaml
+# cluster/roles/longhorn/templates/storage-classes.yaml.j2
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: longhorn-hdd-raw-delete
+provisioner: driver.longhorn.io
+allowVolumeExpansion: true
+reclaimPolicy: Delete
+volumeBindingMode: WaitForFirstConsumer
+parameters:
+  numberOfReplicas: "3"
+  staleReplicaTimeout: "30"
+  diskSelector: "longhorn-hdd-raw"
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: longhorn-hdd-raw-retain
+provisioner: driver.longhorn.io
+allowVolumeExpansion: true
+reclaimPolicy: Retain
+volumeBindingMode: WaitForFirstConsumer
+parameters:
+  numberOfReplicas: "3"
+  staleReplicaTimeout: "30"
+  diskSelector: "longhorn-hdd-raw"
+```
+
+This setup ensures:
+
+- **Disk isolation**: Volumes are only created on disks tagged with `longhorn-hdd-raw`
+- **Reclaim policies**: Two storage classes - one for Delete (default) and one for Retain (for important data)
+- **Replica distribution**: Three replicas spread across the three nodes for redundancy
+
+The `diskSelector` parameter ensures that Longhorn only schedules volume replicas on our dedicated HDD disks, preventing accidental use of system SSDs.
 
 ## Challenge 4: The Great Version Mismatch Mystery
 
@@ -344,11 +390,16 @@ cluster/
 │   └── longhorn/
 │       ├── defaults/main.yaml
 │       ├── tasks/main.yaml
-│       └── templates/values.yaml.j2
+│       └── templates/
+│           ├── values.yaml.j2
+│           ├── storage-classes.yaml.j2
+│           └── node-disk-tags.yaml.j2
 └── data/                    # Generated files (gitignored)
     ├── metallb-config.yaml
     ├── traefik-values.yaml
-    └── longhorn-values.yaml
+    ├── longhorn-values.yaml
+    ├── storage-classes.yaml
+    └── node-disk-tags.yaml
 ```
 
 Each role follows a consistent pattern:
