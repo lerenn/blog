@@ -6,13 +6,13 @@ tags: ["homelab", "networking", "vlan", "openwrt", "security", "infrastructure",
 categories: ["homelab", "networking"]
 ---
 
-*This is the second post in our "Building a Kubernetes Homelab" series. If you haven't read the [first post](/posts/homelab-network-vlan-setup/) yet, I recommend starting there for the full context of this project.*
+*This is the second post in our "Building a Kubernetes Homelab" series. Check out the [previous post](/posts/building-homelab-introduction/) to see how we planned the network architecture.*
 
 ## The Beginning: A Dream and a Plan
 
 It all started with a simple dream: transform my basic homelab into a properly segmented, Kubernetes-based infrastructure. I had been running everything on a single network for years, and the security implications were starting to keep me up at night. Smart home devices mixed with servers, personal devices sharing the same subnet as my lab equipment – it was a security nightmare waiting to happen.
 
-In my [previous post](/posts/homelab-network-vlan-setup/), I outlined the vision: 5 VLANs (Management, Lab, IoT, Devices, Guests) with proper isolation, automated configuration, and a path to Kubernetes. Now it was time to make it real.
+In the [previous post](/posts/building-homelab-introduction/), I outlined the vision: 5 VLANs (Management, Lab, IoT, Devices, Guests) with proper isolation, automated configuration, and a path to Kubernetes. Now it was time to make it real.
 
 ## Chapter 1: The First Hardware Choice and Its Betrayal
 
@@ -573,6 +573,61 @@ By the end of this journey, I had built a comprehensive automation system that i
 - **Testing and Validation**: Comprehensive health checks and connectivity testing
 - **Backup and Restore**: Automated configuration backup with timestamped archives
 
+## What We Achieved
+
+With the network infrastructure complete, we now have:
+
+✅ **VLAN Segmentation**: Five distinct VLANs (Management, Lab, IoT, Devices, Guests) with proper isolation
+✅ **Network Security**: Comprehensive firewall rules enforcing the security matrix
+✅ **WiFi Networks**: Dual-band WiFi with proper VLAN assignment and security
+✅ **DHCP Automation**: Static and dynamic IP assignment with proper MAC address handling
+✅ **VPN Access**: Wireguard VPN providing secure remote access to Lab VLAN only
+✅ **Ansible Automation**: Complete infrastructure-as-code for network configuration
+✅ **Device Integration**: Real devices (HomeAssistant, printer) properly segmented and accessible
+✅ **Documentation**: Comprehensive template documentation for maintainability
+
+## Lessons Learned
+
+This journey taught me several important lessons:
+
+1. **Hardware Matters**: Proprietary firmware can be a deal-breaker. Always verify that hardware supports standard configuration management before committing.
+
+2. **Order of Operations**: Network configuration order matters. Router VLANs must be configured before switch VLANs to avoid connectivity loss.
+
+3. **MAC Address Format**: Always use leading zeros in MAC addresses for DHCP static leases. The format `aa:bb:0c:0d:0e:0f` works, but `aa:bb:c:d:e:f` doesn't.
+
+4. **Template vs Copy**: Use Ansible's `template` module, not `copy`, when you need variable substitution in configuration files.
+
+5. **VLAN Bridging**: WiFi clients need VLAN interfaces to be bridged, not configured directly. Bridges are essential for DHCP to work across VLANs.
+
+6. **Firewall Syntax**: OpenWRT firewall configuration uses `list` for multi-value options, not `option`. This subtle difference causes configuration failures.
+
+7. **WPA2 Package**: OpenWRT ships with `wpad-basic-mbedtls` by default, which doesn't support WPA2-PSK. You need the full `wpad` package.
+
+8. **Encryption Syntax**: OpenWRT expects `'psk2'` for WPA2 encryption, not `'wpa2'`. Always check the documentation for the correct syntax.
+
+9. **Dual-Band WiFi**: Some devices only support 2.4GHz. Configure dual-band networks to support both legacy and modern devices.
+
+10. **DNSMasq Restarts**: DNSMasq doesn't automatically restart after configuration changes. Always restart the service after DHCP configuration updates.
+
+11. **Service Dependencies**: Some services (like Wireguard) need hotplug scripts to ensure peer configurations are applied when interfaces come up.
+
+12. **Security Matrix**: Document your security model clearly. A security matrix makes it easy to understand and maintain access policies.
+
+13. **Automation First**: Infrastructure changes should always go through Ansible. Manual changes are hard to track and reproduce.
+
+14. **Test with Real Devices**: Always test network configuration with real devices. Assumptions about device capabilities (like WiFi band support) can cause issues.
+
+15. **Documentation is Critical**: Comprehensive comments in configuration templates save hours of troubleshooting later.
+
+## Conclusion
+
+The network infrastructure is now complete and stable. We have a properly segmented network with VLAN isolation, secure WiFi access, and automated configuration management. The foundation is solid for deploying the Kubernetes cluster and migrating services.
+
+The journey from a single flat network to a fully segmented, automated infrastructure was challenging, but the result is a network I can trust. The security matrix is enforced, devices are properly isolated, and remote access is secure and controlled.
+
+In the next post, we'll deploy the Kubernetes cluster on the Lab VLAN and begin the journey from network infrastructure to containerized services.
+
 ---
 
-*This is part of the "Building a Kubernetes Homelab" series. In the next post, we'll deploy the Kubernetes cluster on the Lab VLAN and begin migrating services to our new network infrastructure.*
+*Check out the [previous post](/posts/building-homelab-introduction/) to see how we planned the network architecture, or read the [first post](/posts/building-homelab-introduction/) for the complete journey from the beginning.*
