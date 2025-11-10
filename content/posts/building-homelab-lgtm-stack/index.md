@@ -180,8 +180,8 @@ grafana_storage_class: lg-hdd-raw-x1-delete
 # Grafana configuration
 grafana_hostname: grafana.lab.x.y.z
 grafana_ingress_class: traefik
-# Grafana admin password should be set in cluster/secrets.yaml (git-crypt encrypted)
-# This is a fallback default - will be overridden by cluster/secrets.yaml if it exists
+# Grafana admin password should be set in cluster/secrets/grafana.yaml (git-crypt encrypted)
+# This is a fallback default - will be overridden by cluster/secrets/grafana.yaml if it exists
 grafana_admin_password: admin
 
 # Mimir multi-tenancy configuration
@@ -211,7 +211,7 @@ tempo_retention_period: 360h  # 15 days
 mimir_retention_period: 720h  # 30 days
 ```
 
-The Grafana admin password is stored in `host_vars/cluster.yaml` (git-crypted for security).
+The Grafana admin password is stored in `cluster/secrets/grafana.yaml` (git-crypted for security).
 
 ### Deployment Order
 
@@ -371,6 +371,13 @@ store_gateway:  # Note: snake_case, not camelCase
     storageClass: {{ lgtm_data_storage_class }}
     size: {{ mimir_storage_size }}
 
+# Disable ruler and alertmanager - using Grafana unified alerting instead
+ruler:
+  replicas: 0
+
+alertmanager:
+  replicas: 0
+
 # Disable MinIO - we use filesystem storage
 minio:
   enabled: false
@@ -411,23 +418,8 @@ mimir:
       # Enable Push gRPC method when ingest_storage is disabled
       # This is required for Mimir v3.0.0+
       push_grpc_method_enabled: true
-    ruler_storage:
-      backend: filesystem
-      filesystem:
-        dir: /data/ruler-storage
-    alertmanager:
-      data_dir: /data/alertmanager
     compactor:
       data_dir: /data/compactor
-    ruler:
-      rule_path: /data/ruler-rules
-
-# Alertmanager persistence configuration
-alertmanager:
-  persistentVolume:
-    enabled: true
-    storageClass: {{ lgtm_data_storage_class }}
-    size: {{ mimir_storage_size }}
 
 resources:
   requests:
@@ -443,7 +435,8 @@ Critical configuration points:
 - **persistentVolume vs persistence**: Mimir uses `persistentVolume` (not `persistence`) for StatefulSet components
 - **storageClass vs storageClassName**: Use `storageClass` (not `storageClassName`) for StatefulSet volumeClaimTemplates
 - **store_gateway naming**: Must use snake_case `store_gateway`, not camelCase `storeGateway`
-- **Storage path separation**: All components (blocks_storage, tsdb, ruler_storage, alertmanager, compactor, ruler) must use different paths under `/data` to avoid conflicts
+- **Ruler and Alertmanager disabled**: Set to `replicas: 0` since we use Grafana Unified Alerting instead of Mimir's built-in alerting
+- **Storage path separation**: All components (blocks_storage, tsdb, compactor) must use different paths under `/data` to avoid conflicts
 - **Ingester Push gRPC**: When `ingest_storage.enabled: false`, must set `ingester.push_grpc_method_enabled: true` for Mimir v3.0.0+
 - **Rollout operator**: Disabled to avoid webhook TLS certificate issues in homelab environments
 - **Multi-tenancy**: Enabled by default, with tenant federation enabled to allow querying across multiple tenants
@@ -720,7 +713,7 @@ resources:
 
 Key points:
 
-- **Admin password**: Comes from Kubernetes Secret (created from `cluster/secrets.yaml`)
+- **Admin password**: Comes from Kubernetes Secret (created from `cluster/secrets/grafana.yaml`)
 - **Storage**: Uses `lg-hdd-raw-x1-delete` storage class for persistence (updated from x3-retain)
 - **Ingress**: Configured for `grafana.lab.x.y.z`
 - **Multi-tenancy**: All datasources include `X-Scope-OrgID` header with cluster-specific orgId
@@ -930,6 +923,607 @@ One of the key design decisions was to rely on Kubernetes reconciliation instead
 
 This approach is simpler and more resilient—if a component restarts, it will automatically reconnect.
 
+## Challenge 8: Self-Signed CA Certificates for HTTPS
+
+After deploying the LGTM stack and other services, I wanted to enable HTTPS for all internal services. While Let's Encrypt is the standard solution for public-facing services, it requires public DNS resolution and can be complex to set up with DNS-01 challenges. For a homelab environment, a self-signed Certificate Authority (CA) provides a simpler, more flexible solution.
+
+### Why Self-Signed CA?
+
+**Benefits:**
+
+- **No External Dependencies**: No need for public DNS or external certificate authorities
+- **Full Control**: Complete control over certificate validity periods and configurations
+- **Internal Network Focus**: Perfect for services only accessible within the home network
+- **Simple Setup**: No webhook integrations or DNS API credentials required
+
+**Trade-offs:**
+
+- **Manual Trust**: Users must manually install the CA certificate in their browsers/OS
+- **No Public Trust**: Certificates won't be trusted by default (expected for internal services)
+
+### CA Certificate Generation
+
+The first step was creating our own Certificate Authority. All CA files are stored in `cluster/secrets/ca/` and encrypted with `git-crypt`:
+
+**File:** `.gitattributes`
+
+```gitattributes
+cluster/secrets/ca/* filter=git-crypt diff=git-crypt
+```
+
+**CA Root Certificate Generation:**
+
+```bash
+# Generate CA private key
+openssl genrsa -out cluster/secrets/ca/ca.key 4096
+
+# Generate CA certificate (valid for 10 years)
+openssl req -new -x509 -days 3650 -key cluster/secrets/ca/ca.key \
+  -out cluster/secrets/ca/ca.crt \
+  -subj "/CN=Home Lab CA/O=Home Lab/C=FR"
+```
+
+**Service Certificate Generation:**
+
+For each service (Grafana, Longhorn, ntfy, and the CA service itself), we generate certificates with Subject Alternative Names (SAN) and proper extensions:
+
+```bash
+# Example: Grafana certificate
+openssl genrsa -out cluster/secrets/ca/grafana.key 2048
+
+# Create certificate signing request
+openssl req -new -key cluster/secrets/ca/grafana.key \
+  -out cluster/secrets/ca/grafana.csr \
+  -subj "/CN=grafana.lab.x.y.z"
+
+# Generate certificate with SAN and extensions
+openssl x509 -req -in cluster/secrets/ca/grafana.csr \
+  -CA cluster/secrets/ca/ca.crt \
+  -CAkey cluster/secrets/ca/ca.key \
+  -CAcreateserial \
+  -out cluster/secrets/ca/grafana.crt \
+  -days 3650 \
+  -extensions v3_req \
+  -extfile <(echo -e "[v3_req]\nkeyUsage = keyEncipherment, dataEncipherment\nextendedKeyUsage = serverAuth\nsubjectAltName = @alt_names\n[alt_names]\nDNS.1 = grafana.lab.x.y.z")
+
+# Repeat for other services:
+# - longhorn.lab.x.y.z
+# - ntfy.lab.x.y.z
+# - ca.lab.x.y.z
+```
+
+**Key Requirements:**
+
+- **Subject Alternative Names (SAN)**: Required for modern browsers to trust certificates
+- **Key Usage Extensions**: `keyEncipherment`, `dataEncipherment`, and `serverAuth` are essential
+- **Certificate Chain**: Service certificates must include the CA certificate in the chain for browsers to trust them
+
+### Kubernetes TLS Secret Creation
+
+Each service needs a Kubernetes TLS secret containing both the service certificate and the CA certificate (for the full chain). The Ansible role loads the certificates and creates the secrets:
+
+**File:** `cluster/roles/lgtm/tasks/main.yaml`
+
+```yaml
+- name: Load Grafana certificate
+  slurp:
+    src: "{{ playbook_dir }}/../secrets/ca/grafana.crt"
+  register: grafana_cert_file
+
+- name: Load CA certificate for chain
+  slurp:
+    src: "{{ playbook_dir }}/../secrets/ca/ca.crt"
+  register: ca_cert_file
+
+- name: Load Grafana private key
+  slurp:
+    src: "{{ playbook_dir }}/../secrets/ca/grafana.key"
+  register: grafana_key_file
+
+- name: Create Grafana TLS secret with certificate chain
+  kubernetes.core.k8s:
+    state: present
+    resource_definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: grafana-tls
+        namespace: "{{ lgtm_namespace }}"
+      type: kubernetes.io/tls
+      stringData:
+        tls.crt: "{{ grafana_cert_file.content | b64decode }}{{ ca_cert_file.content | b64decode }}"
+        tls.key: "{{ grafana_key_file.content | b64decode }}"
+```
+
+**Critical Point**: The `tls.crt` field must contain the full certificate chain—first the service certificate, then the CA certificate. Browsers require the complete chain to establish trust.
+
+### CA Certificate Distribution Service
+
+To make it easy for users to install the CA certificate, we deployed a lightweight Nginx service that serves the CA certificate and installation instructions:
+
+**File:** `cluster/roles/ca/templates/ca-deployment.yaml.j2`
+
+The CA service includes:
+
+- **Nginx Deployment**: Lightweight static web server
+- **HTML Download Page**: Instructions for installing the CA certificate on different platforms (Chrome, Firefox, macOS, Windows)
+- **CA Certificate Endpoint**: Direct download link at `/ca.crt`
+- **HTTPS Access**: The service itself uses HTTPS with a certificate from our CA
+
+**File:** `cluster/roles/ca/templates/nginx.conf.j2`
+
+```nginx
+server {
+    listen 80;
+    server_name _;
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # Serve CA certificate file
+    location /ca.crt {
+        alias /etc/ssl/ca/ca.crt;
+        default_type application/x-x509-ca-cert;
+        add_header Content-Disposition 'attachment; filename="home-lab-ca.crt"';
+    }
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}
+```
+
+The CA service is accessible at `https://ca.lab.x.y.z`, providing a user-friendly way to download and install the root CA certificate.
+
+### Ingress TLS Configuration
+
+All services were updated to use HTTPS with the self-signed certificates:
+
+**Grafana Ingress:**
+
+```yaml
+ingress:
+  enabled: true
+  ingressClassName: traefik
+  hosts:
+    - grafana.lab.x.y.z
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+  tls:
+    - hosts:
+        - grafana.lab.x.y.z
+      secretName: grafana-tls
+```
+
+**Longhorn Ingress (with WebSocket support):**
+
+```yaml
+ingress:
+  enabled: true
+  ingressClassName: traefik
+  host: longhorn.lab.x.y.z
+  tls: true
+  tlsSecretName: longhorn-tls
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/websocket: "true"  # Required for Longhorn UI
+```
+
+**Important**: Longhorn's UI uses WebSocket connections, which require the `traefik.ingress.kubernetes.io/websocket: "true"` annotation. Without this, WebSocket connections fail with HTTP 200 responses instead of proper WebSocket upgrades (HTTP 101).
+
+### Certificate Chain Validation
+
+One of the most common issues was browsers showing "Potential Security Risk Ahead" warnings even after installing the CA certificate. This was caused by:
+
+1. **Missing Certificate Chain**: The TLS secret only contained the service certificate, not the full chain
+2. **Missing SAN Extensions**: Certificates without Subject Alternative Names are rejected by modern browsers
+3. **Incorrect Key Usage**: Missing `serverAuth` extension
+
+**Solution**: Ensure all service certificates include:
+
+- SAN extensions with the correct DNS names
+- Proper key usage extensions (`keyEncipherment`, `dataEncipherment`, `serverAuth`)
+- Full certificate chain in the Kubernetes TLS secret (service cert + CA cert)
+
+### Longhorn Ingress Patching
+
+The Longhorn Helm chart generates its own ingress with a default TLS secret name. We need to patch it after deployment to use our custom TLS secret:
+
+**File:** `cluster/roles/longhorn/tasks/main.yaml`
+
+```yaml
+- name: Patch Longhorn ingress to use correct TLS secret and WebSocket support
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: Ingress
+      metadata:
+        name: longhorn-ingress
+        namespace: "{{ longhorn_namespace }}"
+        annotations:
+          traefik.ingress.kubernetes.io/router.entrypoints: websecure
+          traefik.ingress.kubernetes.io/websocket: "true"
+      spec:
+        tls:
+        - hosts:
+          - "{{ longhorn_ingress_host }}"
+          secretName: longhorn-tls
+```
+
+This ensures the Longhorn ingress uses our custom TLS secret and has WebSocket support enabled.
+
+### DNS Configuration
+
+All services are accessible via DNS names configured in the router:
+
+**File:** `network/roles/router/templates/network/dhcp.conf`
+
+```dnsmasq
+# Cluster services
+cname=longhorn.lab.x.y.z,cluster.lab.x.y.z
+cname=grafana.lab.x.y.z,cluster.lab.x.y.z
+cname=ntfy.lab.x.y.z,cluster.lab.x.y.z
+cname=ca.lab.x.y.z,cluster.lab.x.y.z
+```
+
+All services resolve to the cluster VIP (`cluster.lab.x.y.z`), which is handled by MetalLB and Traefik.
+
+### User Experience
+
+After deploying the CA service and installing the root CA certificate:
+
+1. **Visit CA Service**: Navigate to `https://ca.lab.x.y.z`
+2. **Download Certificate**: Click the download button to get `home-lab-ca.crt`
+3. **Install in Browser/OS**: Follow platform-specific instructions (Chrome, Firefox, macOS, Windows)
+4. **Access Services**: All services (`grafana`, `longhorn`, `ntfy`) now load without security warnings
+
+### Security Considerations
+
+- **Private Keys**: All private keys are stored in `cluster/secrets/ca/` and encrypted with `git-crypt`
+- **Certificate Validity**: CA certificate is valid for 10 years; service certificates are also valid for 10 years
+- **Internal Use Only**: These certificates are only valid for internal network services
+- **No Public Trust**: This is expected and acceptable for homelab environments
+
+## Challenge 9: Alert Notifications with ntfy
+
+Having metrics and alerts is only useful if you're notified when something goes wrong. I set up **ntfy** as a self-hosted push notification service to receive alerts from Grafana's Unified Alerting system.
+
+### Why ntfy?
+
+ntfy is a simple, self-hosted push notification service that:
+
+- Has a web interface for testing
+- Supports mobile apps (iOS/Android) for receiving notifications
+- Works with webhooks (perfect for Grafana integration)
+- Is lightweight and easy to deploy
+- Requires no external services or API keys
+
+### Deploying ntfy
+
+Created a dedicated Ansible role for ntfy:
+
+**File:** `cluster/roles/ntfy/tasks/main.yaml`
+
+```yaml
+- name: Create ntfy namespace
+  kubernetes.core.k8s:
+    name: "{{ ntfy_namespace }}"
+    api_version: v1
+    kind: Namespace
+    state: present
+
+- name: Create ntfy deployment
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: ntfy
+        namespace: "{{ ntfy_namespace }}"
+      spec:
+        replicas: 1
+        selector:
+          matchLabels:
+            app: ntfy
+        template:
+          metadata:
+            labels:
+              app: ntfy
+          spec:
+            containers:
+            - name: ntfy
+              image: binwiederhier/ntfy:latest
+              command: ["ntfy", "serve"]
+              ports:
+              - containerPort: 80
+                name: http
+```
+
+**File:** `cluster/roles/ntfy/templates/ntfy-ingress.yaml.j2`
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ntfy
+  namespace: {{ ntfy_namespace }}
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+spec:
+  ingressClassName: {{ ntfy_ingress_class }}
+  tls:
+  - hosts:
+    - {{ ntfy_hostname }}
+    secretName: ntfy-tls
+  rules:
+  - host: {{ ntfy_hostname }}
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: ntfy
+            port:
+              number: 80
+```
+
+Like other services, ntfy uses our self-signed CA certificate for HTTPS.
+
+### Configuring Grafana Unified Alerting
+
+Grafana's Unified Alerting system replaced the old alerting mechanisms in Grafana 8.0+. It uses a more flexible architecture with:
+
+- **Alert Rules**: Define the conditions that trigger alerts
+- **Contact Points**: Define where to send notifications (webhooks, email, Slack, etc.)
+- **Notification Policies**: Define routing rules for alerts to contact points
+
+#### Creating Alert Rules
+
+Created alert rules for CPU and RAM usage:
+
+**File:** `cluster/roles/lgtm/templates/grafana-alert-rules.yaml.j2`
+
+```yaml
+apiVersion: 1
+
+groups:
+  - name: cpu-ram-usage
+    interval: 1m
+    orgId: 1
+    folder: "Infrastructure"
+    rules:
+      - uid: high-cpu-usage
+        title: High CPU Usage
+        condition: cpu_threshold
+        data:
+          - refId: cpu_usage
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: mimir-foundation
+            model:
+              expr: (sum(rate(container_cpu_usage_seconds_total{id=~"/kubepods/.*"}[5m])) / sum(machine_cpu_cores)) * 100
+          - refId: cpu_reduced
+            datasourceUid: __expr__
+            model:
+              expression: cpu_usage
+              reducer: last
+              type: reduce
+          - refId: cpu_threshold
+            datasourceUid: __expr__
+            model:
+              expression: cpu_reduced
+              type: threshold
+              conditions:
+                - evaluator:
+                    params: [90]
+                    type: gt
+        noDataState: NoData
+        execErrState: Alerting
+        for: 5m
+        annotations:
+          description: "CPU usage is above 90% for more than 5 minutes. Current value: {{ $values.cpu_usage }}%"
+          summary: "High CPU usage detected"
+        labels:
+          severity: warning
+          cluster: "foundation"
+```
+
+**Critical Insight**: Alert expressions must follow a specific flow: **Query → Reduce → Threshold**. The `threshold` type requires reduced (single-value) data, not time series data. Without the `reduce` step, alerts will fail with "invalid format of evaluation results: looks like time series data, only reduced data can be alerted on."
+
+#### Configuring Contact Points via API
+
+After experimenting with file-based provisioning, I switched to API-based contact point configuration for greater flexibility and better notification formatting. This approach allows us to use ntfy's JSON message format for rich notifications:
+
+**File:** `cluster/roles/lgtm/tasks/configure.yaml`
+
+```yaml
+- name: Create or update ntfy contact point via API
+  shell: |
+    GRAFANA_POD="{{ grafana_pod_info.resources[0].metadata.name }}"
+    GRAFANA_PASSWORD="{{ grafana_secret.resources[0].data['admin-password'] | b64decode }}"
+    NAMESPACE="{{ lgtm_namespace }}"
+    
+    # Check if contact point exists
+    EXISTING=$(kubectl exec -n $NAMESPACE "$GRAFANA_POD" -- sh -c "
+      curl -s -u admin:\"$GRAFANA_PASSWORD\" \
+        http://localhost:3000/api/v1/provisioning/contact-points
+    " | grep -o '\"uid\":\"ntfy\"' || echo "")
+    
+    if [ -n "$EXISTING" ]; then
+      # Update existing contact point
+      kubectl exec -n $NAMESPACE "$GRAFANA_POD" -- sh -c "
+        curl -s -X PUT \
+          -H 'Content-Type: application/json' \
+          -H 'X-Disable-Provenance: true' \
+          -u admin:\"$GRAFANA_PASSWORD\" \
+          -d '{
+            \"uid\": \"ntfy\",
+            \"name\": \"ntfy\",
+            \"type\": \"webhook\",
+            \"settings\": {
+              \"url\": \"http://ntfy.ntfy-system.svc.cluster.local/grafana-alerts\",
+              \"httpMethod\": \"POST\",
+              \"message\": \"{{ if eq .Status \\\"firing\\\" }}🔥 FIRING{{ else }}✅ RESOLVED{{ end }}: {{ .CommonLabels.alertname }}\\n\\n📊 Cluster: {{ .CommonLabels.cluster }}\\n⚠️ Severity: {{ .CommonLabels.severity }}\\n\\n{{ .CommonAnnotations.description }}\\n\\n🔗 View in Grafana: https://grafana.lab.x.y.z/alerting/list\"
+            }
+          }' \
+          http://localhost:3000/api/v1/provisioning/contact-points/ntfy
+      "
+    else
+      # Create new contact point (same body as update)
+    fi
+```
+
+This configuration provides:
+
+- **Emojis**: 🔥 for firing alerts, ✅ for resolved alerts
+- **Dynamic Content**: Alert status, cluster name, and severity information
+- **Rich Formatting**: Multi-line messages with emojis for better readability
+- **Direct Links**: Direct links to Grafana's alerting page in the message
+
+#### Configuring Notification Policies via API
+
+File-based provisioning for notification policies proved unreliable. The solution was to configure notification policies via Grafana's API in a separate playbook:
+
+**File:** `cluster/playbooks/configure.yaml`
+
+```yaml
+---
+- name: Configure Grafana notification policies via API
+  hosts: localhost
+  gather_facts: false
+  vars:
+    kubeconfig_path: "{{ playbook_dir }}/../../machines/data/kubeconfig"
+  
+  tasks:
+    - name: Include configure tasks from lgtm role
+      ansible.builtin.include_role:
+        name: lgtm
+        tasks_from: configure
+```
+
+**File:** `cluster/roles/lgtm/tasks/configure.yaml`
+
+```yaml
+- name: Configure notification policy via kubectl exec
+  shell: |
+    GRAFANA_POD="{{ grafana_pod_info.resources[0].metadata.name }}"
+    GRAFANA_PASSWORD="{{ grafana_secret.resources[0].data['admin-password'] | b64decode }}"
+    kubectl exec -n {{ lgtm_namespace }} "$GRAFANA_POD" -- sh -c "
+      curl -s -X PUT \
+        -H 'Content-Type: application/json' \
+        -H 'X-Disable-Provenance: true' \
+        -u admin:\"$GRAFANA_PASSWORD\" \
+        -d '{
+          \"receiver\": \"ntfy\",
+          \"group_by\": [\"alertname\", \"cluster\"],
+          \"group_wait\": \"10s\",
+          \"group_interval\": \"10s\",
+          \"repeat_interval\": \"12h\"
+        }' \
+        http://localhost:3000/api/v1/provisioning/policies
+    "
+```
+
+The `X-Disable-Provenance: true` header is critical—it allows API-based configuration to work alongside file-based provisioning.
+
+#### Makefile Integration
+
+Added a separate target for configuring notification policies:
+
+**File:** `Makefile`
+
+```makefile
+.PHONY: cluster/configure
+cluster/configure: machines/kubeconfig
+    @echo "⚙️  Configuring Grafana notification policies via API..."
+    ansible-playbook -i inventory.yaml cluster/playbooks/configure.yaml
+```
+
+Deployment workflow:
+
+```bash
+make cluster/deploy       # Deploy infrastructure and Grafana with alert rules
+make cluster/configure    # Configure contact points and notification policies via API
+```
+
+### Fixing False Positive Alerts
+
+After deployment, both CPU and RAM alerts were firing constantly despite actual usage being only ~15%. The issue was the alert expression structure.
+
+**Root Cause**: Using `threshold` type directly on time series data. Grafana's threshold expressions require reduced (single-value) data, not time series data. The error in Grafana logs:
+
+```text
+Error: invalid format of evaluation results for the alert definition cpu_threshold: looks like time series data, only reduced data can be alerted on.
+```
+
+**Solution**: Add a `reduce` step between the query and threshold:
+
+1. **Query** (`cpu_usage`): Get metrics from Prometheus/Mimir → time series data
+2. **Reduce** (`cpu_reduced`): Convert time series to single value using `last` reducer
+3. **Threshold** (`cpu_threshold`): Evaluate if reduced value > 90
+
+This three-step flow ensures alerts only fire when metrics actually exceed thresholds.
+
+### Testing Notifications
+
+With contact points and notification policies configured via API, notifications flow correctly:
+
+```bash
+curl -s "https://ntfy.lab.x.y.z/grafana-alerts/json?poll=1&since=5m" --insecure
+```
+
+Output shows successful notifications:
+
+```json
+{
+  "receiver": "ntfy",
+  "status": "firing",
+  "alerts": [{
+    "status": "firing",
+    "labels": {
+      "alertname": "High CPU Usage",
+      "cluster": "foundation",
+      "severity": "warning"
+    },
+    "annotations": {
+      "description": "CPU usage is above 90% for more than 5 minutes.",
+      "summary": "High CPU usage detected"
+    }
+  }],
+  "title": "Grafana Alert: High CPU Usage",
+  "message": "CPU usage is above 90% for more than 5 minutes."
+}
+```
+
+Notifications are received for both:
+
+- **Firing alerts** (`status: "firing"`) when thresholds are exceeded
+- **Resolved alerts** (`status: "resolved"`) when conditions return to normal
+
+### Mobile App Integration
+
+The ntfy mobile app (available for iOS and Android) can subscribe to the `grafana-alerts` topic at `https://ntfy.lab.x.y.z`. This enables push notifications to your phone when alerts fire.
+
+### Key Takeaways
+
+1. **Alert Expression Flow**: Grafana Unified Alerting requires a specific flow: **Query → Reduce → Threshold**. Threshold expressions need reduced data, not time series. Always test alert rules with real data to avoid false positives.
+
+2. **API-Based Contact Points**: API-based provisioning for contact points offers greater flexibility than file-based, especially for complex message formatting (like ntfy's JSON format with emojis, priorities, and clickable links).
+
+3. **Separate Playbooks**: Keep infrastructure deployment (`make cluster/deploy`) separate from configuration (`make cluster/configure`). This separation allows you to reconfigure notification policies without redeploying the entire stack.
+
+4. **X-Disable-Provenance Header**: This header allows API-configured resources to coexist with file-based provisioned resources, enabling a hybrid approach.
+
+5. **ntfy is Simple**: No external services, no API keys, no complex configuration—just a webhook URL and you're done. Perfect for homelab environments.
+
+6. **Rich Notifications**: ntfy's JSON message format supports emojis, priority levels, tags, and clickable links—making alerts more informative and actionable on mobile devices.
+
+7. **Test Alert Rules**: Always verify alert thresholds with actual metrics before deployment. False positive alerts create alert fatigue and undermine the entire monitoring system.
+
 ## The Deployment
 
 With all roles created and configured, deployment is straightforward:
@@ -974,15 +1568,20 @@ With the LGTM stack deployed, we now have:
 ✅ **Kubernetes Metrics**: Metrics server providing resource usage data
 ✅ **Node Failure Detection**: Alloy can detect node failures and alert via Grafana
 ✅ **Data Persistence**: Critical configs retained, ephemeral data deletable
+✅ **HTTPS for All Services**: Self-signed CA certificates enable secure HTTPS access to Grafana, Longhorn, ntfy, and the CA distribution service
+✅ **CA Certificate Distribution**: User-friendly service for downloading and installing the root CA certificate
+✅ **Alert Notifications**: Grafana Unified Alerting integrated with ntfy for push notifications to web and mobile
+✅ **Self-Hosted Notifications**: ntfy provides notifications without external dependencies or API keys
 
 ## The Road Ahead
 
-The observability stack is now complete. The next steps will be:
+The observability stack is now complete with metrics, logs, traces, and notifications. The next steps will be:
 
-1. **Dashboards**: Create custom dashboards for cluster health, node status, and application metrics
-2. **Alerting**: Configure Grafana alerting rules for node failures, pod crashes, and resource exhaustion
+1. **Dashboard Expansion**: Create custom dashboards for cluster health, node status, and application metrics
+2. **Additional Alert Rules**: Expand alerting to cover node failures, pod crashes, disk space, and network issues
 3. **Service Monitoring**: Add application-specific monitoring as services are deployed
 4. **Trace Instrumentation**: Add OpenTelemetry instrumentation to applications for distributed tracing
+5. **Alert Tuning**: Refine alert thresholds and notification policies based on real-world usage
 
 ## Lessons Learned
 
@@ -1002,7 +1601,7 @@ This phase taught me several important lessons:
 
 7. **Webhook Complexity**: Webhooks can cause TLS certificate issues in homelab environments. Disable optional webhooks (like rollout operator) unless specifically needed.
 
-8. **Storage Path Conflicts**: All Mimir components (blocks_storage, tsdb, ruler_storage, alertmanager, compactor, ruler) must use different filesystem paths under `/data` to avoid "directory cannot overlap" errors.
+8. **Storage Path Conflicts**: All Mimir components (blocks_storage, tsdb, compactor) must use different filesystem paths under `/data` to avoid "directory cannot overlap" errors. Ruler and Alertmanager are disabled since we use Grafana Unified Alerting.
 
 9. **Metrics Enablement**: Infrastructure components need metrics enabled—don't assume they're on by default
 
@@ -1026,11 +1625,47 @@ This phase taught me several important lessons:
 
 19. **Dashboard Provisioning**: Grafana can automatically provision dashboards from ConfigMaps mounted at `/var/lib/grafana/dashboards` using the `extraConfigmapMounts` feature.
 
+20. **Self-Signed CA for Homelab**: A self-signed Certificate Authority is simpler and more flexible than Let's Encrypt for internal-only services. No external dependencies, full control over validity periods, and perfect for homelab environments.
+
+21. **Certificate Chain is Critical**: Kubernetes TLS secrets must include the full certificate chain (service certificate + CA certificate) in the `tls.crt` field. Browsers require the complete chain to establish trust.
+
+22. **SAN Extensions Required**: Modern browsers reject certificates without Subject Alternative Names (SAN). Always include SAN extensions with the correct DNS names when generating service certificates.
+
+23. **WebSocket Support in Traefik**: Longhorn and other services using WebSocket require the `traefik.ingress.kubernetes.io/websocket: "true"` annotation. Without this, WebSocket connections fail with HTTP 200 instead of proper WebSocket upgrades (HTTP 101).
+
+24. **Longhorn Ingress Patching**: The Longhorn Helm chart generates an ingress with a default TLS secret name. You must patch it after deployment to use your custom TLS secret and add WebSocket annotations.
+
+25. **CA Distribution Service**: Deploying a lightweight Nginx service to distribute the CA certificate makes it easy for users to install the root certificate. Include platform-specific installation instructions for better user experience.
+
+26. **Alert Expression Flow Matters**: Grafana Unified Alerting requires a specific expression flow: Query → Reduce → Threshold. Threshold expressions need reduced (single-value) data, not time series. Using threshold directly on time series results in "invalid format of evaluation results" errors.
+
+27. **API-Based Contact Points for Flexibility**: API-based provisioning for contact points offers greater flexibility than file-based, especially for complex message formatting. Use API when you need dynamic content, conditional logic (like emojis based on status), or rich notification formats.
+
+28. **Separate Infrastructure and Configuration**: Use file-based provisioning for infrastructure (alert rules) and API-based configuration for operational resources (contact points, notification policies). This separation keeps Ansible playbooks focused on infrastructure while allowing operational flexibility.
+
+29. **X-Disable-Provenance Header**: When using API-based Grafana configuration, include the `X-Disable-Provenance: true` header to prevent provenance conflicts and allow API modifications to work seamlessly.
+
+30. **ntfy for Simple Notifications**: ntfy provides a self-hosted notification solution without external dependencies, API keys, or complex configuration. Its JSON message format supports emojis, priority levels, tags, and clickable links—perfect for homelab environments.
+
+31. **Grafana Unified Alerting Architecture**: Understand the three-layer architecture: Alert Rules (conditions), Contact Points (destinations), and Notification Policies (routing). Each layer has different provisioning options and constraints.
+
+32. **Test Alert Rules with Real Data**: Always verify alert thresholds with actual metrics before deployment. False positive alerts create alert fatigue and undermine the entire monitoring system. Test your alert expression flow to ensure it evaluates correctly.
+
 ## Conclusion
 
-The LGTM observability stack is now deployed and providing comprehensive visibility into the cluster. We can monitor logs, metrics, and traces from a single interface, and the infrastructure is ready for application deployment.
+The LGTM observability stack is now fully deployed with comprehensive monitoring and alerting capabilities. We have:
 
-In the next post, we'll explore how to use this observability stack to monitor applications and create custom dashboards for specific use cases.
+- **Logs** collected and searchable via Loki
+- **Metrics** stored and queryable via Mimir
+- **Traces** collected via Tempo (ready for instrumentation)
+- **Unified Visualization** through Grafana
+- **Alert Rules** for CPU and memory thresholds
+- **Push Notifications** via ntfy to web and mobile
+- **Secure HTTPS** access to all services
+
+The infrastructure is production-ready and accurately monitoring the cluster's health. Notifications arrive on both desktop and mobile devices when actual issues arise (metrics above 90%), enabling rapid response while avoiding alert fatigue from false positives.
+
+In the next post, we'll explore how to expand this observability stack with custom dashboards, additional alert rules, and application-specific monitoring.
 
 ---
 
