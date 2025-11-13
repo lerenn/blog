@@ -253,7 +253,7 @@ The fully automated PXE boot setup requires just a few commands:
 
 ```bash
 # Configure router with complete PXE boot system
-make router/setup
+make router/deploy
 
 # Build PXE files (templates → generated files with token substitution)
 make machines/build
@@ -522,7 +522,7 @@ storage:
           [Service]
           Type=oneshot
           ExecStart=/opt/k3s-install.sh
-          ExecStart=/bin/touch /var/lib/%N.stamp
+          ExecStartPost=/bin/touch /var/lib/%N.stamp
 
 systemd:
   units:
