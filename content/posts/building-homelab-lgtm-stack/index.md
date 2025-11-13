@@ -1553,7 +1553,7 @@ cluster_services:
 Then redeploy router configuration:
 
 ```bash
-make router/setup
+make router/deploy
 ```
 
 ## What We Achieved
