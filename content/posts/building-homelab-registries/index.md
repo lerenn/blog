@@ -1,6 +1,6 @@
 ---
 title: "Building a Kubernetes Homelab: Deploying Container Image Registries"
-date: 2025-01-20T10:00:00+01:00
+date: 2025-11-19T10:00:00+01:00
 description: "Deploying local container registries and mirrors for custom images and upstream caching in our Kubernetes homelab"
 tags: ["homelab", "kubernetes", "container-registry", "docker-registry", "image-mirror", "ansible", "tls"]
 categories: ["homelab", "kubernetes"]
