@@ -1,5 +1,5 @@
 ---
-title: "Building a Kubernetes Homelab: My Journey from ISP Router to VLAN-Segmented Network"
+title: "Building a Kubernetes Homelab: the VLAN-Segmented Network"
 date: 2025-09-20T11:00:00+01:00
 description: "A personal journey through network automation, hardware failures, and the satisfaction of building a proper homelab infrastructure"
 tags: ["homelab", "networking", "vlan", "openwrt", "security", "infrastructure", "ansible", "story"]
