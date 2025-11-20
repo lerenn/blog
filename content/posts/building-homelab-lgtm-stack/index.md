@@ -6,11 +6,11 @@ tags: ["homelab", "kubernetes", "observability", "lgtm", "loki", "grafana", "tem
 categories: ["homelab", "kubernetes"]
 ---
 
-*This is the fifth post in our "Building a Kubernetes Homelab" series. Check out the [previous post](/posts/building-homelab-foundation-cluster/) to see how we deployed MetalLB, Traefik, and Longhorn as the foundation layer.*
+*This is the fifth post in our "Building a Kubernetes Homelab" series. Check out the [previous post](/posts/building-homelab-foundation-layer/) to see how we deployed MetalLB, Traefik, and Longhorn as the foundation layer.*
 
 ## From Infrastructure to Observability
 
-With the foundation cluster infrastructure in place—MetalLB providing load balancing, Traefik handling ingress, and Longhorn offering distributed storage—the cluster was functional but blind. I had no visibility into what was happening inside. Pods could crash, nodes could fail, services could degrade, and I'd have no idea until something broke catastrophically.
+With the cluster infrastructure in place—MetalLB providing load balancing, Traefik handling ingress, and Longhorn offering distributed storage—the cluster was functional but blind. I had no visibility into what was happening inside. Pods could crash, nodes could fail, services could degrade, and I'd have no idea until something broke catastrophically.
 
 It was time to add observability. Not just basic monitoring, but a comprehensive observability stack that would give me insights into logs, metrics, and traces—the three pillars of observability.
 
@@ -185,19 +185,7 @@ grafana_ingress_class: traefik
 grafana_admin_password: admin
 
 # Mimir multi-tenancy configuration
-# Each cluster should have its own orgId using descriptive names:
-# - Foundation cluster: "foundation" (default)
-# - Cryptellation cluster: "cryptellation"
-# - Perso cluster: "perso"
-#
-# Each cluster deploys its own Alloy collector, which sends metrics to Mimir
-# with the cluster-specific orgId via the X-Scope-OrgID header.
-#
-# To override for other clusters, set mimir_org_id in:
-# - Inventory vars (per cluster/group)
-# - Playbook vars
-# - Command line: -e "mimir_org_id=cryptellation"
-mimir_org_id: "foundation"
+mimir_org_id: "homelab"
 
 # Storage sizes (conservative for homelab)
 loki_storage_size: 50Gi
@@ -394,11 +382,6 @@ rolloutOperator:
 mimir:
   structuredConfig:
     target: all
-    # Multi-tenancy is enabled by default in Mimir
-    # Each cluster should use its own orgId via X-Scope-OrgID header:
-    # - Foundation cluster: "foundation"
-    # - Cryptellation cluster: "cryptellation"  
-    # - Perso cluster: "perso"
     # Enable tenant federation to allow querying across multiple tenants
     tenant_federation:
       enabled: true
@@ -599,7 +582,7 @@ alloy:
 
 This configuration:
 
-- **Multi-tenancy**: Sends metrics and logs with `X-Scope-OrgID` header set to `{{ mimir_org_id }}` (defaults to "foundation")
+- **Multi-tenancy**: Sends metrics and logs with `X-Scope-OrgID` header set to `{{ mimir_org_id }}` (defaults to "homelab")
 - **Node-local scraping**: Each Alloy pod only scrapes its local node's kubelet to avoid out-of-order samples and reduce network traffic
 - **Kubernetes node discovery**: Uses `discovery.kubernetes` to discover nodes, then filters to only the pod's local node using `env("NODE_NAME")`
 - **cAdvisor metrics**: Scrapes container metrics from kubelet's `/metrics/cadvisor` endpoint
@@ -717,102 +700,11 @@ Key points:
 - **Storage**: Uses `lg-hdd-raw-x1-delete` storage class for persistence (updated from x3-retain)
 - **Ingress**: Configured for `grafana.lab.x.y.z`
 - **Multi-tenancy**: All datasources include `X-Scope-OrgID` header with cluster-specific orgId
-- **Datasource UIDs**: Include orgId in UID (e.g., `mimir-foundation`, `loki-foundation`) for proper identification
+- **Datasource UIDs**: Include orgId in UID (e.g., `mimir-homelab`, `loki-homelab`) for proper identification
 - **Dashboard provisioning**: ConfigMaps can be mounted to automatically provision dashboards
 - **Loki default**: Loki is set as the default data source for log queries
 
-## Challenge 4: Multi-Tenancy Configuration
-
-As the homelab grows to include multiple Kubernetes clusters (foundation, cryptellation, perso), we need a way to isolate data per cluster while still using a single Mimir instance. This is where multi-tenancy comes in.
-
-### Multi-Tenancy Architecture
-
-Mimir, Loki, and Tempo all support multi-tenancy via the `X-Scope-OrgID` HTTP header. Each cluster can use its own descriptive orgId (e.g., "foundation", "cryptellation", "perso") to isolate data while sharing the same backend infrastructure.
-
-**Benefits:**
-
-- **Data Isolation**: Each cluster's metrics and logs are isolated by orgId
-- **Single Backend**: One Mimir/Loki/Tempo instance can serve multiple clusters
-- **Tenant Federation**: With tenant federation enabled, you can query across multiple tenants when needed
-- **Cost Efficiency**: No need to deploy separate instances per cluster
-
-### Configuration
-
-**File:** `cluster/roles/lgtm/defaults/main.yaml`
-
-```yaml
-# Mimir multi-tenancy configuration
-# Each cluster should have its own orgId using descriptive names:
-# - Foundation cluster: "foundation" (default)
-# - Cryptellation cluster: "cryptellation"
-# - Perso cluster: "perso"
-mimir_org_id: "foundation"
-```
-
-The `mimir_org_id` variable can be overridden per cluster via:
-
-- Inventory vars (per cluster/group)
-- Playbook vars
-- Command line: `-e "mimir_org_id=cryptellation"`
-
-### Alloy Multi-Tenancy
-
-Alloy sends all data (metrics and logs) with the `X-Scope-OrgID` header:
-
-```yaml
-prometheus.remote_write "mimir" {
-  endpoint {
-    url = "http://mimir-distributor:8080/api/v1/push"
-    headers = {
-      "X-Scope-OrgID" = "{{ mimir_org_id }}",
-    }
-  }
-}
-
-loki.write "loki" {
-  endpoint {
-    url = "http://loki-gateway:80/loki/api/v1/push"
-    headers = {
-      "X-Scope-OrgID" = "{{ mimir_org_id }}",
-    }
-  }
-}
-```
-
-### Grafana Datasource Multi-Tenancy
-
-Grafana datasources must also include the `X-Scope-OrgID` header when querying Mimir and Loki:
-
-```yaml
-datasources:
-  - name: Mimir
-    jsonData:
-      httpHeaderName1: "X-Scope-OrgID"
-    secureJsonData:
-      httpHeaderValue1: "{{ mimir_org_id }}"
-  - name: Loki
-    jsonData:
-      httpHeaderName1: "X-Scope-OrgID"
-    secureJsonData:
-      httpHeaderValue1: "{{ mimir_org_id }}"
-```
-
-This ensures Grafana queries the correct tenant's data when using the datasource.
-
-### Tenant Federation
-
-Mimir supports tenant federation, which allows querying across multiple tenants:
-
-```yaml
-mimir:
-  structuredConfig:
-    tenant_federation:
-      enabled: true
-```
-
-With tenant federation enabled, you can query metrics from multiple clusters by specifying multiple orgIds in the `X-Scope-OrgID` header (comma-separated).
-
-## Challenge 5: Storage Class Configuration Issues
+## Challenge 4: Storage Class Configuration Issues
 
 One of the most challenging issues during deployment was getting persistent storage correctly configured for StatefulSets. The Helm charts use different structures for different components, and getting the storage class names right was critical.
 
@@ -852,7 +744,7 @@ rolloutOperator:
 
 This is safe for single-node deployments where zero-downtime rollouts are less critical.
 
-## Challenge 6: Configuration Validation Errors
+## Challenge 5: Configuration Validation Errors
 
 Several configuration validation errors required careful attention:
 
@@ -912,7 +804,7 @@ url = "http://mimir-distributor:8080/api/v1/push"  # Distributor for ingestion
 
 The gateway is for queries, the distributor is for ingestion.
 
-## Challenge 7: Kubernetes Reconciliation
+## Challenge 6: Kubernetes Reconciliation
 
 One of the key design decisions was to rely on Kubernetes reconciliation instead of explicit wait conditions. This means:
 
@@ -923,7 +815,7 @@ One of the key design decisions was to rely on Kubernetes reconciliation instead
 
 This approach is simpler and more resilient—if a component restarts, it will automatically reconnect.
 
-## Challenge 8: Self-Signed CA Certificates for HTTPS
+## Challenge 7: Self-Signed CA Certificates for HTTPS
 
 After deploying the LGTM stack and other services, I wanted to enable HTTPS for all internal services. While Let's Encrypt is the standard solution for public-facing services, it requires public DNS resolution and can be complex to set up with DNS-01 challenges. For a homelab environment, a self-signed Certificate Authority (CA) provides a simpler, more flexible solution.
 
@@ -1185,7 +1077,7 @@ After deploying the CA service and installing the root CA certificate:
 - **Internal Use Only**: These certificates are only valid for internal network services
 - **No Public Trust**: This is expected and acceptable for homelab environments
 
-## Challenge 9: Alert Notifications with ntfy
+## Challenge 8: Alert Notifications with ntfy
 
 Having metrics and alerts is only useful if you're notified when something goes wrong. I set up **ntfy** as a self-hosted push notification service to receive alerts from Grafana's Unified Alerting system.
 
@@ -1303,7 +1195,7 @@ groups:
             relativeTimeRange:
               from: 300
               to: 0
-            datasourceUid: mimir-foundation
+            datasourceUid: mimir-homelab
             model:
               expr: (sum(rate(container_cpu_usage_seconds_total{id=~"/kubepods/.*"}[5m])) / sum(machine_cpu_cores)) * 100
           - refId: cpu_reduced
@@ -1329,7 +1221,7 @@ groups:
           summary: "High CPU usage detected"
         labels:
           severity: warning
-          cluster: "foundation"
+          cluster: "homelab"
 ```
 
 **Critical Insight**: Alert expressions must follow a specific flow: **Query → Reduce → Threshold**. The `threshold` type requires reduced (single-value) data, not time series data. Without the `reduce` step, alerts will fail with "invalid format of evaluation results: looks like time series data, only reduced data can be alerted on."
@@ -1486,7 +1378,7 @@ Output shows successful notifications:
     "status": "firing",
     "labels": {
       "alertname": "High CPU Usage",
-      "cluster": "foundation",
+      "cluster": "homelab",
       "severity": "warning"
     },
     "annotations": {
@@ -1615,41 +1507,39 @@ This phase taught me several important lessons:
 
 14. **DNS Configuration**: Adding services to `cluster_services` in inventory automatically creates DNS CNAME records, but router configuration must be redeployed to take effect.
 
-15. **Multi-Tenancy Design**: Use descriptive orgIds (e.g., "foundation", "cryptellation") instead of numeric IDs for better clarity and maintainability.
+15. **Node-Local Scraping**: Each Alloy pod should only scrape its local node's kubelet to avoid duplicate metrics and out-of-order sample errors.
 
-16. **Node-Local Scraping**: Each Alloy pod should only scrape its local node's kubelet to avoid duplicate metrics and out-of-order sample errors.
+16. **Mimir Endpoints**: Use `mimir-distributor` for ingestion (remote write) and `mimir-gateway` for queries. The gateway is not the correct endpoint for ingestion.
 
-17. **Mimir Endpoints**: Use `mimir-distributor` for ingestion (remote write) and `mimir-gateway` for queries. The gateway is not the correct endpoint for ingestion.
+17. **Grafana Custom Headers**: Grafana datasources support custom HTTP headers via `jsonData.httpHeaderName1` and `secureJsonData.httpHeaderValue1` for multi-tenancy support.
 
-18. **Grafana Custom Headers**: Grafana datasources support custom HTTP headers via `jsonData.httpHeaderName1` and `secureJsonData.httpHeaderValue1` for multi-tenancy support.
+18. **Dashboard Provisioning**: Grafana can automatically provision dashboards from ConfigMaps mounted at `/var/lib/grafana/dashboards` using the `extraConfigmapMounts` feature.
 
-19. **Dashboard Provisioning**: Grafana can automatically provision dashboards from ConfigMaps mounted at `/var/lib/grafana/dashboards` using the `extraConfigmapMounts` feature.
+19. **Self-Signed CA for Homelab**: A self-signed Certificate Authority is simpler and more flexible than Let's Encrypt for internal-only services. No external dependencies, full control over validity periods, and perfect for homelab environments.
 
-20. **Self-Signed CA for Homelab**: A self-signed Certificate Authority is simpler and more flexible than Let's Encrypt for internal-only services. No external dependencies, full control over validity periods, and perfect for homelab environments.
+20. **Certificate Chain is Critical**: Kubernetes TLS secrets must include the full certificate chain (service certificate + CA certificate) in the `tls.crt` field. Browsers require the complete chain to establish trust.
 
-21. **Certificate Chain is Critical**: Kubernetes TLS secrets must include the full certificate chain (service certificate + CA certificate) in the `tls.crt` field. Browsers require the complete chain to establish trust.
+21. **SAN Extensions Required**: Modern browsers reject certificates without Subject Alternative Names (SAN). Always include SAN extensions with the correct DNS names when generating service certificates.
 
-22. **SAN Extensions Required**: Modern browsers reject certificates without Subject Alternative Names (SAN). Always include SAN extensions with the correct DNS names when generating service certificates.
+22. **WebSocket Support in Traefik**: Longhorn and other services using WebSocket require the `traefik.ingress.kubernetes.io/websocket: "true"` annotation. Without this, WebSocket connections fail with HTTP 200 instead of proper WebSocket upgrades (HTTP 101).
 
-23. **WebSocket Support in Traefik**: Longhorn and other services using WebSocket require the `traefik.ingress.kubernetes.io/websocket: "true"` annotation. Without this, WebSocket connections fail with HTTP 200 instead of proper WebSocket upgrades (HTTP 101).
+23. **Longhorn Ingress Patching**: The Longhorn Helm chart generates an ingress with a default TLS secret name. You must patch it after deployment to use your custom TLS secret and add WebSocket annotations.
 
-24. **Longhorn Ingress Patching**: The Longhorn Helm chart generates an ingress with a default TLS secret name. You must patch it after deployment to use your custom TLS secret and add WebSocket annotations.
+24. **CA Distribution Service**: Deploying a lightweight Nginx service to distribute the CA certificate makes it easy for users to install the root certificate. Include platform-specific installation instructions for better user experience.
 
-25. **CA Distribution Service**: Deploying a lightweight Nginx service to distribute the CA certificate makes it easy for users to install the root certificate. Include platform-specific installation instructions for better user experience.
+25. **Alert Expression Flow Matters**: Grafana Unified Alerting requires a specific expression flow: Query → Reduce → Threshold. Threshold expressions need reduced (single-value) data, not time series. Using threshold directly on time series results in "invalid format of evaluation results" errors.
 
-26. **Alert Expression Flow Matters**: Grafana Unified Alerting requires a specific expression flow: Query → Reduce → Threshold. Threshold expressions need reduced (single-value) data, not time series. Using threshold directly on time series results in "invalid format of evaluation results" errors.
+26. **API-Based Contact Points for Flexibility**: API-based provisioning for contact points offers greater flexibility than file-based, especially for complex message formatting. Use API when you need dynamic content, conditional logic (like emojis based on status), or rich notification formats.
 
-27. **API-Based Contact Points for Flexibility**: API-based provisioning for contact points offers greater flexibility than file-based, especially for complex message formatting. Use API when you need dynamic content, conditional logic (like emojis based on status), or rich notification formats.
+27. **Separate Infrastructure and Configuration**: Use file-based provisioning for infrastructure (alert rules) and API-based configuration for operational resources (contact points, notification policies). This separation keeps Ansible playbooks focused on infrastructure while allowing operational flexibility.
 
-28. **Separate Infrastructure and Configuration**: Use file-based provisioning for infrastructure (alert rules) and API-based configuration for operational resources (contact points, notification policies). This separation keeps Ansible playbooks focused on infrastructure while allowing operational flexibility.
+28. **X-Disable-Provenance Header**: When using API-based Grafana configuration, include the `X-Disable-Provenance: true` header to prevent provenance conflicts and allow API modifications to work seamlessly.
 
-29. **X-Disable-Provenance Header**: When using API-based Grafana configuration, include the `X-Disable-Provenance: true` header to prevent provenance conflicts and allow API modifications to work seamlessly.
+29. **ntfy for Simple Notifications**: ntfy provides a self-hosted notification solution without external dependencies, API keys, or complex configuration. Its JSON message format supports emojis, priority levels, tags, and clickable links—perfect for homelab environments.
 
-30. **ntfy for Simple Notifications**: ntfy provides a self-hosted notification solution without external dependencies, API keys, or complex configuration. Its JSON message format supports emojis, priority levels, tags, and clickable links—perfect for homelab environments.
+30. **Grafana Unified Alerting Architecture**: Understand the three-layer architecture: Alert Rules (conditions), Contact Points (destinations), and Notification Policies (routing). Each layer has different provisioning options and constraints.
 
-31. **Grafana Unified Alerting Architecture**: Understand the three-layer architecture: Alert Rules (conditions), Contact Points (destinations), and Notification Policies (routing). Each layer has different provisioning options and constraints.
-
-32. **Test Alert Rules with Real Data**: Always verify alert thresholds with actual metrics before deployment. False positive alerts create alert fatigue and undermine the entire monitoring system. Test your alert expression flow to ensure it evaluates correctly.
+31. **Test Alert Rules with Real Data**: Always verify alert thresholds with actual metrics before deployment. False positive alerts create alert fatigue and undermine the entire monitoring system. Test your alert expression flow to ensure it evaluates correctly.
 
 ## Conclusion
 
@@ -1669,4 +1559,4 @@ In the next post, we'll explore how to expand this observability stack with cust
 
 ---
 
-*Check out the [previous post](/posts/building-homelab-foundation-cluster/) to see how we built the foundation infrastructure, or read the [first post](/posts/building-homelab-introduction/) for the complete journey from the beginning.*
+*Check out the [previous post](/posts/building-homelab-foundation-layer/) to see how we built the foundation infrastructure, or read the [first post](/posts/building-homelab-introduction/) for the complete journey from the beginning.*

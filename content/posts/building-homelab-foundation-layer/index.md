@@ -1,61 +1,25 @@
 ---
-title: "Building a Kubernetes Homelab: Deploying the Foundation Cluster Infrastructure"
+title: "Building a Kubernetes Homelab: Deploying the Cluster Infrastructure"
 date: 2025-10-28T10:00:00+01:00
-description: "Deploying MetalLB, Traefik Ingress, and Longhorn storage to create the foundation layer for our specialized Kubernetes clusters"
-tags: ["homelab", "kubernetes", "metallb", "traefik", "longhorn", "storage", "load-balancing", "infrastructure", "ansible"]
+description: "Deploying MetalLB, Traefik Ingress, Longhorn storage, and container registries to create the foundation layer for our Kubernetes cluster"
+tags: ["homelab", "kubernetes", "metallb", "traefik", "longhorn", "storage", "load-balancing", "infrastructure", "ansible", "docker-registry", "container-registry"]
 categories: ["homelab", "kubernetes"]
 ---
 
 *This is the fourth post in our "Building a Kubernetes Homelab" series. Check out the [previous post](/posts/building-homelab-kubernetes-cluster/) to see how we deployed the physical K3s cluster with PXE boot and Butane configurations.*
 
-## From Physical to Logical: Building the Foundation Layer
+## Building the Foundation Layer
 
-With the physical K3s cluster up and running across our three Lenovo nodes, it was time to deploy the essential infrastructure services that would form the foundation for everything else. These services needed to run at the physical cluster level—before we could deploy any specialized logical clusters.
+With the physical K3s cluster up and running across our three Lenovo nodes, it was time to deploy the essential infrastructure services that would form the foundation for everything else. These services provide the core primitives that all workloads running on the cluster will depend on.
 
-The foundation layer consists of three critical components:
+The foundation layer consists of four critical components:
 
 1. **MetalLB** - Load balancer for bare-metal Kubernetes
 2. **Traefik** - Ingress controller for HTTP/HTTPS traffic
 3. **Longhorn** - Distributed block storage for persistent volumes
+4. **Container Registries** - Local registry and mirrors for image management
 
-Together, these three services provide the infrastructure layer that specialized clusters will consume.
-
-## The Architecture: Foundation vs Specialized Clusters
-
-Before diving into the implementation, let's clarify the architecture. This was a key design decision I made early on:
-
-```mermaid
-graph TB
-    subgraph "Physical Layer"
-        subgraph "Foundation Cluster"
-            K3s[K3s Cluster<br/>lenovo1, lenovo2, lenovo3]
-            MetalLB[MetalLB<br/>VIP Manager]
-            Traefik[Traefik<br/>Ingress Controller]
-            Longhorn[Longhorn<br/>Distributed Storage]
-        end
-    end
-    
-    subgraph "Logical Layer - Future"
-        projectX[projectX<br/>Specialized Cluster]
-        Perso[Personal<br/>Specialized Cluster]
-    end
-    
-    MetalLB -->|Provides VIPs| Traefik
-    Traefik -->|Routes Traffic| FutureApps
-    Longhorn -->|Provides PVs| AllClusters
-    K3s -->|Hosts| AllServices
-```
-
-**Foundation Cluster**: The physical K3s cluster running the infrastructure services. These services are shared across all specialized clusters.
-
-**Specialized Clusters**: Future logical clusters (like "projectX" for some project, "perso" for personal services) that will consume the foundation layer services.
-
-This separation allows:
-
-- Shared infrastructure across multiple logical clusters
-- Clean separation of concerns
-- Easier upgrades and maintenance
-- Consistent patterns across all specialized clusters
+Together, these four services provide the essential infrastructure layer that all applications and services running on the cluster will consume.
 
 ## Challenge 1: Load Balancing Without a Cloud Provider
 
@@ -372,7 +336,7 @@ This allows accessing services by their friendly hostnames while only managing o
 
 ## The Ansible Structure
 
-All foundation cluster infrastructure is organized in `cluster/`:
+All cluster infrastructure is organized in `cluster/`:
 
 ```text
 cluster/
@@ -387,19 +351,28 @@ cluster/
 │   │   ├── defaults/main.yaml
 │   │   ├── tasks/main.yaml
 │   │   └── templates/values.yaml.j2
-│   └── longhorn/
+│   ├── longhorn/
+│   │   ├── defaults/main.yaml
+│   │   ├── tasks/main.yaml
+│   │   └── templates/
+│   │       ├── values.yaml.j2
+│   │       ├── storage-classes.yaml.j2
+│   │       └── node-disk-tags.yaml.j2
+│   └── registries/
 │       ├── defaults/main.yaml
-│       ├── tasks/main.yaml
+│       ├── tasks/
+│       │   ├── install.yaml
+│       │   └── uninstall.yaml
 │       └── templates/
-│           ├── values.yaml.j2
-│           ├── storage-classes.yaml.j2
-│           └── node-disk-tags.yaml.j2
+│           ├── container-image-registry-*.yaml.j2
+│           └── container-image-mirror-*.yaml.j2
 └── data/                    # Generated files (gitignored)
     ├── metallb-config.yaml
     ├── traefik-values.yaml
     ├── longhorn-values.yaml
     ├── storage-classes.yaml
-    └── node-disk-tags.yaml
+    ├── node-disk-tags.yaml
+    └── registry-*.yaml
 ```
 
 Each role follows a consistent pattern:
@@ -443,10 +416,10 @@ This installs Python3 on first boot and persists through Zincati (Fedora CoreOS 
 The deployment is integrated into the main Makefile:
 
 ```makefile
-# Foundation Cluster Commands
+# Cluster Commands
 .PHONY: cluster/deploy
 cluster/deploy: machines/kubeconfig
-    @echo "📦 Deploying foundation cluster infrastructure..."
+    @echo "📦 Deploying cluster infrastructure..."
     ansible-playbook -i inventory.yaml cluster/playbooks/deploy.yaml
 ```
 
@@ -457,6 +430,121 @@ Running `make cluster/deploy`:
 3. Runs all three roles in sequence
 4. Deploys the complete foundation layer
 
+## Challenge 5: Container Image Registry and Mirrors
+
+As the cluster grew, I needed a way to store custom container images and cache public images to avoid rate limiting and speed up pulls. The solution: deploy a local container registry and mirror registries for upstream sources.
+
+### The Registry Architecture
+
+I deployed three registries in the `registry-system` namespace:
+
+1. **Main Registry** (`registry`): Stores custom-built images
+   - Storage: 2Gi with `Retain` policy (data should persist)
+   - Accessible at: `registry.lab.home.lerenn.net`
+
+2. **Docker Hub Mirror** (`docker-io`): Caches images from `docker.io`
+   - Storage: 2Gi with `Delete` policy (cache can be evicted)
+   - Accessible at: `docker-io.lab.home.lerenn.net`
+
+3. **GHCR Mirror** (`ghcr-io`): Caches images from `ghcr.io`
+   - Storage: 2Gi with `Delete` policy (cache can be evicted)
+   - Accessible at: `ghcr-io.lab.home.lerenn.net`
+
+All registries use Docker Registry v2 and are exposed via Traefik with TLS termination.
+
+### Registry Configuration
+
+The registries are configured via Ansible with a flexible inventory structure:
+
+```yaml
+# inventory.yaml
+container_image_mirrors:
+  - url: https://registry-1.docker.io
+    registry: docker.io
+    size: 2Gi
+  - url: https://ghcr.io
+    registry: ghcr.io
+    size: 2Gi
+```
+
+The Ansible role automatically:
+
+- Creates ConfigMaps with proxy configuration for each mirror
+- Deploys Deployments with proper resource limits
+- Creates Services and Ingress resources
+- Generates TLS certificates using the CA role
+- Configures K3s `registries.yaml` for automatic mirror usage
+
+### K3s Integration: Automatic Mirror Usage
+
+The key feature is automatic mirror usage during node installation. The `registries.yaml` file is generated and served via PXE boot:
+
+```yaml
+# Generated registries.yaml
+mirrors:
+  "docker.io":
+    endpoint:
+      - "https://docker-io.registry-system.svc.cluster.local:5000"
+  "ghcr.io":
+    endpoint:
+      - "https://ghcr-io.registry-system.svc.cluster.local:5000"
+configs:
+  "registry.registry-system.svc.cluster.local:5000":
+    tls:
+      ca_file: /etc/rancher/k3s/ssl/registry-ca.crt
+  "docker-io.registry-system.svc.cluster.local:5000":
+    tls:
+      ca_file: /etc/rancher/k3s/ssl/registry-ca.crt
+  "ghcr-io.registry-system.svc.cluster.local:5000":
+    tls:
+      ca_file: /etc/rancher/k3s/ssl/registry-ca.crt
+```
+
+This configuration:
+
+- Routes `docker.io` pulls to the `docker-io` mirror
+- Routes `ghcr.io` pulls to the `ghcr-io` mirror
+- Falls back to upstream registries if mirrors are unavailable
+- Uses TLS with the cluster CA certificate
+
+### Docker Registry v2 Proxy Limitations
+
+Docker Registry v2's proxy mode only supports a single upstream registry per instance. This is why we need separate mirror instances for `docker.io` and `ghcr.io`. Each mirror:
+
+- Proxies requests to its upstream registry
+- Caches blobs locally with configurable TTL (default: 168h)
+- Returns cached blobs on subsequent requests
+- Automatically evicts old blobs when storage is full
+
+### TLS Configuration
+
+All registries use TLS certificates generated by the CA role:
+
+- Certificates are stored in `cluster/secrets/ca/registry/`
+- Each registry has its own certificate (registry.crt, docker-io.crt, ghcr-io.crt)
+- Certificates are signed by the cluster CA
+- The CA certificate is distributed to nodes during PXE boot
+
+### External Access
+
+Registries are accessible both:
+
+- **Internally**: Via Kubernetes service DNS (`registry.registry-system.svc.cluster.local:5000`)
+- **Externally**: Via Traefik ingress (`registry.lab.home.lerenn.net:443`)
+
+External access requires installing the CA certificate on Docker Desktop or native Docker clients. The CA website (`https://ca.lab.home.lerenn.net/`) provides installation instructions for both web browsers and Docker clients.
+
+### Benefits
+
+This registry setup provides:
+
+✅ **Custom Image Storage**: Build and store custom images locally
+✅ **Rate Limit Avoidance**: Cache public images to avoid Docker Hub rate limits
+✅ **Faster Pulls**: Local cache speeds up image pulls significantly
+✅ **Offline Capability**: Cached images available even if upstream is down
+✅ **Automatic Usage**: K3s nodes automatically use mirrors during installation
+✅ **TLS Security**: All registry communication is encrypted
+
 ## What We Achieved
 
 With the foundation layer deployed, we now have:
@@ -464,6 +552,7 @@ With the foundation layer deployed, we now have:
 ✅ **Load Balancing**: MetalLB managing VIP distribution
 ✅ **Ingress**: Traefik routing HTTP/HTTPS traffic
 ✅ **Storage**: Longhorn providing persistent volumes
+✅ **Container Registries**: Local registry and mirrors for image management
 ✅ **DNS**: CNAME-based routing for all services
 ✅ **Automation**: Complete Ansible-driven deployment
 ✅ **Monitoring**: All services accessible via friendly hostnames
@@ -473,11 +562,11 @@ With the foundation layer deployed, we now have:
 
 The foundation is now solid. The next steps will be:
 
-1. **Longhorn Access**: Configure ingress to access Longhorn UI
+1. **Longhorn Access**: Configure ingress to access Longhorn UI ✅
 2. **Testing**: Verify VIP failover and service resilience
-3. **Specialized Clusters**: Deploy first logical cluster (projectX or perso)
-4. **Service Migration**: Move existing services to Kubernetes
-5. **Monitoring Stack**: Deploy Prometheus and Grafana
+3. **Service Migration**: Move existing services to Kubernetes
+4. **Monitoring Stack**: Deploy Prometheus and Grafana ✅
+5. **Container Registry**: Local registry for custom images ✅
 
 ## Lessons Learned
 
@@ -489,12 +578,15 @@ This phase taught me several important lessons:
 4. **Layer Order**: Infrastructure services must be stable before deploying workload
 5. **DNS Design**: CNAME aliasing is cleaner than managing multiple A records
 6. **Automation First**: Infrastructure changes should always go through Ansible
+7. **Registry Mirrors**: Separate mirror instances needed for each upstream registry (Docker Registry v2 limitation)
+8. **TLS Everywhere**: Self-signed certificates require CA distribution to all clients (browsers, Docker, K3s)
+9. **PXE Integration**: Registry configuration must be available during node installation for automatic mirror usage
 
 ## Conclusion
 
-The foundation cluster infrastructure is now deployed and stable. We have a solid base for building specialized clusters on top. The combination of MetalLB, Traefik, and Longhorn provides all the essential primitives that specialized clusters will consume.
+The cluster infrastructure is now deployed and stable. We have a solid base for running all workloads on the cluster. The combination of MetalLB, Traefik, Longhorn, and container registries provides all the essential primitives that applications and services will consume.
 
-In the next post, we'll explore how to use this foundation to deploy specialized logical clusters, potentially using technologies like KCP (Kubernetes Control Plane) or vCluster to create isolated, workload-specific environments.
+The foundation layer is complete and ready to support any workload we deploy to the cluster.
 
 ---
 
