@@ -1,6 +1,6 @@
 ---
 title: "Building a Kubernetes Homelab: High Availability for the Control Plane"
-date: 2025-11-20T10:00:00+01:00
+date: 2025-11-20T15:00:00+01:00
 description: "Implementing HA for the Kubernetes API server using MetalLB VIP, navigating certificate issues, and building resilient kubeconfig generation with automatic fallback"
 tags: ["homelab", "kubernetes", "high-availability", "metallb", "k3s", "control-plane", "ansible", "tls", "certificates"]
 categories: ["homelab", "kubernetes"]
