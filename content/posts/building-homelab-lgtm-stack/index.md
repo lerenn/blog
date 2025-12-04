@@ -89,7 +89,7 @@ One of the key decisions was how to handle storage for different types of data:
 
 - **Logs, Metrics, Traces** (`lg-hdd-raw-x1-delete`): These are time-series data that can be regenerated. If we lose historical data, we can start fresh. Single replica is sufficient for a homelab, and Delete reclaim policy means we don't waste storage on old data.
 
-- **Grafana Dashboards/Configs** (`lg-hdd-raw-x3-retain`): These are configuration data that must persist. Three replicas provide redundancy, and Retain policy ensures we never accidentally lose our dashboards and configurations.
+- **Grafana Dashboards/Configs** (`lg-hdd-raw-x3`): These are configuration data that must persist. Three replicas provide redundancy, and Retain policy ensures we never accidentally lose our dashboards and configurations.
 
 This storage strategy balances cost (single replica for ephemeral data) with reliability (triple replica for critical configs).
 

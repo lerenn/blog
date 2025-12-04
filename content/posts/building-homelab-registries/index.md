@@ -106,7 +106,7 @@ registries_namespace: registry-system
 container_image_registry_name: registry
 container_image_registry_image: registry:2
 container_image_registry_port: 5000
-container_image_registry_storage_class: lg-hdd-raw-x3-retain
+container_image_registry_storage_class: lg-hdd-raw-x3
 container_image_registry_storage_size: 2Gi
 container_image_registry_ingress_host: registry.lab.x.y.z
 
@@ -298,7 +298,7 @@ spec:
 
 **Solution**: Used different StorageClasses:
 
-- Main registry: `lg-hdd-raw-x3-retain` (data persists)
+- Main registry: `lg-hdd-raw-x3` (data persists)
 - Mirrors: `lg-hdd-raw-x3-delete` (cache can be evicted)
 
 ### Challenge 3: Mirror Configuration
