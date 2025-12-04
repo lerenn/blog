@@ -1,5 +1,5 @@
 ---
-title: "Building a Kubernetes Homelab: Gaming VMs with KubeVirt and GPU Passthrough"
+title: "Building a Kubernetes Homelab: Gaming VMs with KubeVirt and GPU"
 date: 2025-11-29T14:00:00+01:00
 description: "Deploying gaming VMs on Kubernetes using KubeVirt with NVIDIA RTX 3080 GPU passthrough, dual-mode operation (live/maintenance), and automated lifecycle management"
 tags: ["homelab", "kubernetes", "kubevirt", "gpu", "passthrough", "virtualization", "gaming", "windows", "linux", "ansible", "cdi", "longhorn"]
