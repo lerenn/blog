@@ -1,12 +1,12 @@
 ---
-title: "Building a Kubernetes Homelab: HomeAssistant VM with KubeVirt"
+title: "K8s Homelab: HomeAssistant VM with KubeVirt"
 date: 2025-11-29T18:00:00+01:00
 description: "Deploying HomeAssistant OS as a KubeVirt VM on Kubernetes, migrating from Raspberry Pi to a container-native solution with automated lifecycle management"
 tags: ["homelab", "kubernetes", "kubevirt", "homeassistant", "virtualization", "ansible", "cdi", "longhorn", "iot"]
 categories: ["homelab", "kubernetes"]
 ---
 
-*This is the seventh post in our "Building a Kubernetes Homelab" series. Check out the [previous post](/posts/building-homelab-gaming-kubevirt/) to see how we deployed gaming VMs with GPU passthrough.*
+*This is the seventh post in our "K8s Homelab" series. Check out the [previous post](/posts/homelab-gaming-kubevirt/) to see how we deployed gaming VMs with GPU passthrough.*
 
 ## From Raspberry Pi to Kubernetes-Native
 

@@ -1,18 +1,18 @@
 ---
-title: "Building a Kubernetes Homelab: the VLAN-Segmented Network"
+title: "K8s Homelab: the VLAN-Segmented Network"
 date: 2025-09-20T11:00:00+01:00
 description: "A personal journey through network automation, hardware failures, and the satisfaction of building a proper homelab infrastructure"
 tags: ["homelab", "networking", "vlan", "openwrt", "security", "infrastructure", "ansible", "story"]
 categories: ["homelab", "networking"]
 ---
 
-*This is the second post in our "Building a Kubernetes Homelab" series. Check out the [previous post](/posts/building-homelab-introduction/) to see how we planned the network architecture.*
+*This is the second post in our "K8s Homelab" series. Check out the [previous post](/posts/homelab-introduction/) to see how we planned the network architecture.*
 
 ## The Beginning: A Dream and a Plan
 
 It all started with a simple dream: transform my basic homelab into a properly segmented, Kubernetes-based infrastructure. I had been running everything on a single network for years, and the security implications were starting to keep me up at night. Smart home devices mixed with servers, personal devices sharing the same subnet as my lab equipment – it was a security nightmare waiting to happen.
 
-In the [previous post](/posts/building-homelab-introduction/), I outlined the vision: 5 VLANs (Management, Lab, IoT, Devices, Guests) with proper isolation, automated configuration, and a path to Kubernetes. Now it was time to make it real.
+In the [previous post](/posts/homelab-introduction/), I outlined the vision: 5 VLANs (Management, Lab, IoT, Devices, Guests) with proper isolation, automated configuration, and a path to Kubernetes. Now it was time to make it real.
 
 ## Chapter 1: The First Hardware Choice and Its Betrayal
 
@@ -630,4 +630,4 @@ In the next post, we'll deploy the Kubernetes cluster on the Lab VLAN and begin 
 
 ---
 
-*Check out the [previous post](/posts/building-homelab-introduction/) to see how we planned the network architecture, or read the [first post](/posts/building-homelab-introduction/) for the complete journey from the beginning.*
+*Check out the [previous post](/posts/homelab-introduction/) to see how we planned the network architecture, or read the [first post](/posts/homelab-introduction/) for the complete journey from the beginning.*

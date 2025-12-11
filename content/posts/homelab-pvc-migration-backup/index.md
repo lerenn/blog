@@ -1,12 +1,12 @@
 ---
-title: "Building a Kubernetes Homelab: PVC Migration Strategies"
+title: "K8s Homelab: PVC Migration Strategies"
 date: 2025-11-29T16:00:00+01:00
 description: "Migrating PersistentVolumeClaims between storage classes and implementing backup strategies for VM disk images in a Kubernetes homelab"
 tags: ["homelab", "kubernetes", "storage", "longhorn", "pvc", "backup", "migration", "kubevirt", "data-protection", "ansible"]
 categories: ["homelab", "kubernetes"]
 ---
 
-*This is the seventh post in our "Building a Kubernetes Homelab" series. Check out the [previous post](/posts/building-homelab-gaming-kubevirt/) to see how we deployed gaming VMs with KubeVirt and GPU passthrough.*
+*This is the seventh post in our "K8s Homelab" series. Check out the [previous post](/posts/homelab-gaming-kubevirt/) to see how we deployed gaming VMs with KubeVirt and GPU passthrough.*
 
 ## The Storage Optimization Challenge
 
@@ -492,5 +492,5 @@ With proper backup and migration procedures in place, you can confidently optimi
 
 ---
 
-*This is the seventh post in our "Building a Kubernetes Homelab" series. With storage optimized and backup strategies implemented, we're ready to continue building out the homelab infrastructure. In future posts, we'll cover additional storage optimizations, monitoring, and automation strategies.*
+*This is the seventh post in our "K8s Homelab" series. With storage optimized and backup strategies implemented, we're ready to continue building out the homelab infrastructure. In future posts, we'll cover additional storage optimizations, monitoring, and automation strategies.*
 

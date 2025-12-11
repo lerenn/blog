@@ -1,12 +1,12 @@
 ---
-title: "Building a Kubernetes Homelab: Gaming VMs with KubeVirt and GPU"
+title: "K8s Homelab: Gaming VMs with KubeVirt and GPU"
 date: 2025-11-29T14:00:00+01:00
 description: "Deploying gaming VMs on Kubernetes using KubeVirt with NVIDIA RTX 3080 GPU passthrough, dual-mode operation (live/maintenance), and automated lifecycle management"
 tags: ["homelab", "kubernetes", "kubevirt", "gpu", "passthrough", "virtualization", "gaming", "windows", "linux", "ansible", "cdi", "longhorn"]
 categories: ["homelab", "kubernetes"]
 ---
 
-*This is the sixth post in our "Building a Kubernetes Homelab" series. Check out the [previous post](/posts/building-homelab-lgtm-stack/) to see how we deployed the observability stack with Loki, Grafana, Tempo, and Mimir.*
+*This is the sixth post in our "K8s Homelab" series. Check out the [previous post](/posts/homelab-lgtm-stack/) to see how we deployed the observability stack with Loki, Grafana, Tempo, and Mimir.*
 
 ## From Physical Gaming PC to Kubernetes-Native VMs
 
@@ -753,4 +753,4 @@ With this setup, gaming VMs are now Kubernetes-native resources that can be mana
 
 ---
 
-*This is the sixth post in our "Building a Kubernetes Homelab" series. The gaming VMs are now deployed and ready for installation. In future posts, we'll cover VM installation, performance tuning, and backup strategies.*
+*This is the sixth post in our "K8s Homelab" series. The gaming VMs are now deployed and ready for installation. In future posts, we'll cover VM installation, performance tuning, and backup strategies.*

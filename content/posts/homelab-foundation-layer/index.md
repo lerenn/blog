@@ -1,12 +1,12 @@
 ---
-title: "Building a Kubernetes Homelab: Deploying the Cluster Infrastructure"
+title: "K8s Homelab: Deploying the Cluster Infrastructure"
 date: 2025-10-28T10:00:00+01:00
 description: "Deploying MetalLB, Traefik Ingress, Longhorn storage, and container registries to create the foundation layer for our Kubernetes cluster"
 tags: ["homelab", "kubernetes", "metallb", "traefik", "longhorn", "storage", "load-balancing", "infrastructure", "ansible", "docker-registry", "container-registry"]
 categories: ["homelab", "kubernetes"]
 ---
 
-*This is the fourth post in our "Building a Kubernetes Homelab" series. Check out the [previous post](/posts/building-homelab-kubernetes-cluster/) to see how we deployed the physical K3s cluster with PXE boot and Butane configurations.*
+*This is the fourth post in our "K8s Homelab" series. Check out the [previous post](/posts/homelab-kubernetes-cluster/) to see how we deployed the physical K3s cluster with PXE boot and Butane configurations.*
 
 ## Building the Foundation Layer
 
@@ -590,4 +590,4 @@ The foundation layer is complete and ready to support any workload we deploy to 
 
 ---
 
-*Check out the [previous post](/posts/building-homelab-kubernetes-cluster/) to see how we built the physical cluster, or read the [first post](/posts/building-homelab-introduction/) for the complete journey from the beginning.*
+*Check out the [previous post](/posts/homelab-kubernetes-cluster/) to see how we built the physical cluster, or read the [first post](/posts/homelab-introduction/) for the complete journey from the beginning.*
