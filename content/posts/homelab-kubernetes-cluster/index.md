@@ -1,12 +1,12 @@
 ---
-title: "Building a Kubernetes Homelab: From Network Infrastructure to K3s Cluster"
+title: "K8s Homelab: From Network Infrastructure to K3s Cluster"
 date: 2025-10-12T13:00:00+01:00
 description: "Deploying a highly available K3s cluster on Fedora CoreOS with Butane/Ignition, featuring automated provisioning and future PXE-based upgrades"
 tags: ["homelab", "kubernetes", "k3s", "fedora-coreos", "butane", "ignition", "infrastructure", "automation"]
 categories: ["homelab", "kubernetes"]
 ---
 
-This is the third post in my "Building a Kubernetes Homelab" series. If you haven't read the [first post](/posts/building-homelab-introduction/) and [second post](/posts/building-homelab-network/), start there — they set the stage for what comes next.
+This is the third post in my "K8s Homelab" series. If you haven't read the [first post](/posts/homelab-introduction/) and [second post](/posts/homelab-network/), start there — they set the stage for what comes next.
 
 ## The Leap: From Clean VLANs to a Real Cluster
 

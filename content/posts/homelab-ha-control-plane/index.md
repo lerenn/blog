@@ -1,12 +1,12 @@
 ---
-title: "Building a Kubernetes Homelab: High Availability for the Control Plane"
+title: "K8s Homelab: High Availability for the Control Plane"
 date: 2025-11-20T15:00:00+01:00
 description: "Implementing HA for the Kubernetes API server using keepalived on host, navigating certificate issues, and building resilient kubeconfig generation with automatic fallback"
 tags: ["homelab", "kubernetes", "high-availability", "keepalived", "k3s", "control-plane", "ansible", "tls", "certificates", "vrrp"]
 categories: ["homelab", "kubernetes"]
 ---
 
-*This is the fifth post in our "Building a Kubernetes Homelab" series. Check out the [previous post](/posts/building-homelab-foundation-layer/) to see how we deployed MetalLB, Traefik, Longhorn, and container registries.*
+*This is the fifth post in our "K8s Homelab" series. Check out the [previous post](/posts/homelab-foundation-layer/) to see how we deployed MetalLB, Traefik, Longhorn, and container registries.*
 
 ## The Single Point of Failure Problem
 
@@ -430,4 +430,4 @@ The foundation is now truly resilient, and I can confidently manage the cluster 
 
 ---
 
-*Check out the [previous post](/posts/building-homelab-foundation-layer/) to see how we deployed the cluster infrastructure, or read the [first post](/posts/building-homelab-introduction/) for the complete journey from the beginning.*
+*Check out the [previous post](/posts/homelab-foundation-layer/) to see how we deployed the cluster infrastructure, or read the [first post](/posts/homelab-introduction/) for the complete journey from the beginning.*

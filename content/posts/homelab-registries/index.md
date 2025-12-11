@@ -1,12 +1,12 @@
 ---
-title: "Building a Kubernetes Homelab: Deploying Container Image Registries"
+title: "K8s Homelab: Deploying Container Image Registries"
 date: 2025-11-19T10:00:00+01:00
 description: "Deploying local container registries and mirrors for custom images and upstream caching in our Kubernetes homelab"
 tags: ["homelab", "kubernetes", "container-registry", "docker-registry", "image-mirror", "ansible", "tls"]
 categories: ["homelab", "kubernetes"]
 ---
 
-*This is the sixth post in our "Building a Kubernetes Homelab" series. Check out the [previous post](/posts/building-homelab-lgtm-stack/) to see how we deployed the observability stack.*
+*This is the sixth post in our "K8s Homelab" series. Check out the [previous post](/posts/homelab-lgtm-stack/) to see how we deployed the observability stack.*
 
 ## The Need for Container Registries
 

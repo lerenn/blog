@@ -1,12 +1,12 @@
 ---
-title: "Building a Kubernetes Homelab: Deploying the LGTM Observability Stack"
+title: "K8s Homelab: Deploying the LGTM Observability Stack"
 date: 2025-01-15T10:00:00+01:00
 description: "Deploying Loki, Grafana, Tempo, and Mimir with Grafana Alloy for comprehensive observability in our Kubernetes homelab"
 tags: ["homelab", "kubernetes", "observability", "lgtm", "loki", "grafana", "tempo", "mimir", "alloy", "monitoring", "ansible"]
 categories: ["homelab", "kubernetes"]
 ---
 
-*This is the fifth post in our "Building a Kubernetes Homelab" series. Check out the [previous post](/posts/building-homelab-foundation-layer/) to see how we deployed MetalLB, Traefik, and Longhorn as the foundation layer.*
+*This is the fifth post in our "K8s Homelab" series. Check out the [previous post](/posts/homelab-foundation-layer/) to see how we deployed MetalLB, Traefik, and Longhorn as the foundation layer.*
 
 ## From Infrastructure to Observability
 
@@ -1559,4 +1559,4 @@ In the next post, we'll explore how to expand this observability stack with cust
 
 ---
 
-*Check out the [previous post](/posts/building-homelab-foundation-layer/) to see how we built the foundation infrastructure, or read the [first post](/posts/building-homelab-introduction/) for the complete journey from the beginning.*
+*Check out the [previous post](/posts/homelab-foundation-layer/) to see how we built the foundation infrastructure, or read the [first post](/posts/homelab-introduction/) for the complete journey from the beginning.*

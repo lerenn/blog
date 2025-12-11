@@ -1,5 +1,5 @@
 ---
-title: "Building a Kubernetes Homelab: A Long Journey"
+title: "K8s Homelab: A Long Journey"
 date: 2025-09-20T10:00:00+01:00
 description: "Journey from a single gaming PC with VMs to a proper Kubernetes homelab with VLAN-segmented network infrastructure using OpenWRT and managed switches"
 tags: ["homelab", "kubernetes", "networking", "vlan", "openwrt", "ansible", "infrastructure"]
@@ -163,7 +163,7 @@ that comes with network infrastructure projects!
 
 Ready to dive into the technical implementation? Check out the next post in this series:
 
-**[Building a Kubernetes Homelab: From Default ISP Network to VLAN-Segmented](/posts/from-default-isp-to-vlan-segmented/)**
+**[K8s Homelab: From Default ISP Network to VLAN-Segmented](/posts/from-default-isp-to-vlan-segmented/)**
 
 In the next post, we'll cover the detailed implementation of VLAN segmentation, including OpenWRT configuration, managed switch setup, and network security policies.
 
