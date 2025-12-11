@@ -49,8 +49,18 @@ mkdir -p ~/.bashrc.d
 cat > ~/.bashrc.d/docker-podman.sh <<'EOF'
 #!/bin/bash
 # Enable Docker in the containers
+# Only configure when inside a toolbox to avoid interfering with host shell
 
-export DOCKER_HOST=unix:///run/user/$UID/podman/podman.sock
+# Detect if we're inside a toolbox
+if [ -f /run/.toolboxenv ] || [ -n "${TOOLBOX_NAME:-}" ]; then
+    export DOCKER_HOST=unix:///run/user/$UID/podman/podman.sock
+    export CONTAINER_HOST=unix:///run/user/$UID/podman/podman.sock
+    
+    # Alias podman to podman-remote when in toolbox
+    if command -v podman-remote >/dev/null 2>&1; then
+        alias podman='podman-remote'
+    fi
+fi
 EOF
 
 chmod +x ~/.bashrc.d/docker-podman.sh
@@ -112,6 +122,25 @@ Podman Machine is a feature that creates and manages Linux virtual machines with
 - Has rootful Podman with full kernel access
 - Can be accessed remotely via SSH
 - Provides complete isolation from the host
+
+### Why `podman machine` Commands Must Run on the Host
+
+**Important distinction**: While `podman-remote` can forward container operations (like `podman ps`, `podman run`) to the host via API sockets, `podman machine` commands are fundamentally different:
+
+- **Container operations** (`podman ps`, `podman run`, etc.): These are API calls that can be forwarded remotely via `podman-remote` or by setting `CONTAINER_HOST`/`DOCKER_HOST` to point to an API socket.
+- **Machine management** (`podman machine start`, `podman machine init`, etc.): These commands must execute locally because they:
+  - Launch QEMU virtual machines on the host
+  - Manage VM lifecycle (start/stop VMs)
+  - Create network bridges and configure networking
+  - Set up file sharing between host and VM
+  - Require QEMU binaries (`qemu-system-x86_64`), `gvproxy`, and `virtiofsd` to be available in the execution environment
+
+When you run `podman-remote machine start` from a toolbox, it still tries to execute the machine management locally (in the toolbox), which fails because:
+1. The toolbox doesn't have QEMU installed
+2. The toolbox doesn't have access to the host's VM management infrastructure
+3. Even if QEMU were installed in the toolbox, it would try to create VMs inside the toolbox container, not on the host
+
+**Solution**: To run `podman machine` commands from within a toolbox, you need to execute them on the host. Fedora Silverblue provides `flatpak-spawn --host` for this purpose (see the implementation section below for details).
 
 ### Architecture: Shared Machine for Dagger
 
@@ -249,6 +278,8 @@ podman machine start kind-machine
 
 Create a configuration file that sets up Dagger to use the Podman Machine. This will work across all your toolboxes:
 
+**Note**: The function below uses `flatpak-spawn --host` to execute `podman machine` commands on the host from within the toolbox. `flatpak-spawn` should be available by default in Fedora Silverblue toolboxes. If it's not available, you can install `host-spawn` as an alternative, or manually start the machine on the host.
+
 ```bash
 # Inside toolbox, create bashrc.d configuration
 mkdir -p ~/.bashrc.d
@@ -258,9 +289,77 @@ cat > ~/.bashrc.d/dagger.sh <<'EOF'
 # This socket is created when the machine starts and forwards the Docker API
 # Note: Dagger uses DOCKER_HOST (not CONTAINER_HOST) to detect the container runtime
 
-# Alias dagger to use the Podman Machine API socket
-# This overrides the DOCKER_HOST set by docker-podman.sh
-alias dagger='DOCKER_HOST=unix:///run/user/1000/podman/dagger-machine-api.sock dagger'
+# Helper function to execute commands on the host from within a toolbox
+# Uses flatpak-spawn --host if available, otherwise falls back to direct execution
+_host_exec() {
+    # Detect if we're in a toolbox
+    if [ -f /run/.toolboxenv ] || [ -n "${TOOLBOX_NAME:-}" ]; then
+        # Try flatpak-spawn --host first (available in Fedora Silverblue)
+        if command -v flatpak-spawn >/dev/null 2>&1; then
+            flatpak-spawn --host "$@"
+        # Fallback to host-spawn if available
+        elif command -v host-spawn >/dev/null 2>&1; then
+            host-spawn "$@"
+        else
+            echo "Error: Cannot execute commands on host. Install 'flatpak-spawn' or 'host-spawn'." >&2
+            return 1
+        fi
+    else
+        # Not in a toolbox, execute directly
+        "$@"
+    fi
+}
+
+# Function to check and start the Podman machine if needed
+_dagger_ensure_machine() {
+    local machine_name="dagger-machine"
+    local api_socket="/run/user/$UID/podman/${machine_name}-api.sock"
+    local max_wait_time=10  # Maximum wait time in seconds
+    local wait_interval=0.5  # Check interval in seconds
+    local max_wait_count=$((max_wait_time * 2))  # Number of iterations (0.5s each)
+    
+    # Check if the API socket exists (indicates machine is running)
+    if [ ! -S "$api_socket" ]; then
+        # Machine is not running, try to start it on the host
+        echo "Starting Podman machine '$machine_name' on host..."
+        if _host_exec timeout 30 podman machine start "$machine_name" 2>/dev/null; then
+            # Wait for the socket to appear with timeout
+            local wait_count=0
+            while [ ! -S "$api_socket" ] && [ $wait_count -lt $max_wait_count ]; do
+                sleep $wait_interval
+                wait_count=$((wait_count + 1))
+            done
+            
+            if [ -S "$api_socket" ]; then
+                echo "Podman machine '$machine_name' started successfully."
+            else
+                echo "Warning: Podman machine started but socket not found at $api_socket after ${max_wait_time}s"
+                echo "Please verify the machine is running on the host: podman machine list"
+                return 1
+            fi
+        else
+            echo "Warning: Could not start Podman machine '$machine_name' (timeout or error)."
+            echo "Please start it manually on the host: podman machine start $machine_name"
+            return 1
+        fi
+    fi
+    return 0
+}
+
+# Wrapper function for dagger that ensures machine is running
+dagger() {
+    # Remove any existing alias first
+    unalias dagger 2>/dev/null
+    
+    # Ensure machine is running
+    if ! _dagger_ensure_machine; then
+        echo "Error: Cannot proceed without Podman machine running."
+        return 1
+    fi
+    
+    # Execute dagger with the correct DOCKER_HOST
+    DOCKER_HOST=unix:///run/user/$UID/podman/dagger-machine-api.sock command dagger "$@"
+}
 EOF
 
 chmod +x ~/.bashrc.d/dagger.sh
@@ -279,7 +378,7 @@ cat > ~/.bashrc.d/kind.sh <<'EOF'
 # Note: Kind also uses DOCKER_HOST to detect the container runtime
 
 # Alias kind to use the Podman Machine API socket
-alias kind='DOCKER_HOST=unix:///run/user/1000/podman/kind-machine-api.sock kind'
+alias kind='DOCKER_HOST=unix:///run/user/$UID/podman/kind-machine-api.sock kind'
 EOF
 
 chmod +x ~/.bashrc.d/kind.sh
@@ -307,22 +406,23 @@ if [ -d ~/.bashrc.d ]; then
 fi
 ```
 
-After adding this, either restart your shell or run `source ~/.bashrc` to load the aliases and environment variables. This will load:
-- `docker-podman.sh` - Sets `DOCKER_HOST` to the rootless Podman socket for Docker compatibility
-- `dagger.sh` - Configures Dagger to use the Podman Machine API socket via `DOCKER_HOST` (overrides the rootless socket)
+After adding this, either restart your shell or run `source ~/.bashrc` to load the functions, aliases, and environment variables. This will load:
+- `docker-podman.sh` - Sets `DOCKER_HOST` and `CONTAINER_HOST` to the rootless Podman socket for Docker compatibility, and aliases `podman` to `podman-remote` (only when inside a toolbox to avoid interfering with the host shell)
+- `dagger.sh` - Configures Dagger to use the Podman Machine API socket via `DOCKER_HOST`, and automatically starts the machine if it's not running (overrides the rootless socket)
 - `kind.sh` - Configures Kind to use the Podman Machine API socket via `DOCKER_HOST` (if created)
 
-**Important**: Dagger and Kind use `DOCKER_HOST` (not `CONTAINER_HOST`) to detect the container runtime. The aliases override the `DOCKER_HOST` set by `docker-podman.sh` to point to the Podman Machine API socket instead of the rootless Podman socket.
+**Important**: Dagger and Kind use `DOCKER_HOST` (not `CONTAINER_HOST`) to detect the container runtime. The `dagger` function overrides the `DOCKER_HOST` set by `docker-podman.sh` to point to the Podman Machine API socket instead of the rootless Podman socket.
 
 ### Step 3: Configure Dagger to Use Podman Machine
 
-With the alias set up, Dagger will automatically use the Podman Machine. You can test it:
+With the function set up, Dagger will automatically use the Podman Machine and start it if needed. You can test it:
 
 ```bash
 # Test Dagger connection
 dagger version
 
-# The alias ensures DOCKER_HOST is set correctly to use the Podman Machine API socket
+# The function ensures DOCKER_HOST is set correctly to use the Podman Machine API socket
+# and automatically starts the machine if it's not running
 ```
 
 ### Step 4: Verify Dagger Engine Works
@@ -330,12 +430,14 @@ dagger version
 Run a simple Dagger command to start the engine:
 
 ```bash
-# This will trigger engine startup (alias automatically uses the Podman Machine API socket)
+# This will trigger engine startup (function automatically uses the Podman Machine API socket and starts the machine if needed)
 dagger query
 
 # Check engine logs using the API socket
 # Note: podman commands use CONTAINER_HOST (Dagger uses DOCKER_HOST)
-CONTAINER_HOST=unix:///run/user/1000/podman/dagger-machine-api.sock podman logs dagger-engine-v0.19.8
+# First, find the engine container name (version may vary)
+ENGINE_CONTAINER=$(CONTAINER_HOST=unix:///run/user/$UID/podman/dagger-machine-api.sock podman ps -a | grep dagger-engine | awk '{print $1}' | head -1)
+CONTAINER_HOST=unix:///run/user/$UID/podman/dagger-machine-api.sock podman logs ${ENGINE_CONTAINER}
 ```
 
 You should see the engine starting successfully without iptables errors. The logs should show:
@@ -398,15 +500,15 @@ Each service gets its own dedicated machine, ensuring isolation and preventing r
 
 ```bash
 # Verify the API socket exists
-ls -la /run/user/1000/podman/dagger-machine-api.sock
+ls -la /run/user/$UID/podman/dagger-machine-api.sock
 
 # Test podman with the API socket to verify rootful access
 # Note: podman uses CONTAINER_HOST (not DOCKER_HOST)
-CONTAINER_HOST=unix:///run/user/1000/podman/dagger-machine-api.sock podman info | grep rootless
+CONTAINER_HOST=unix:///run/user/$UID/podman/dagger-machine-api.sock podman info | grep rootless
 # Expected: rootless: false
 
 # List containers (should work)
-CONTAINER_HOST=unix:///run/user/1000/podman/dagger-machine-api.sock podman ps -a
+CONTAINER_HOST=unix:///run/user/$UID/podman/dagger-machine-api.sock podman ps -a
 ```
 
 ### Test Dagger Engine
@@ -434,13 +536,13 @@ EOF
 ```bash
 # Find the engine container using the API socket
 # Note: podman commands use CONTAINER_HOST (not DOCKER_HOST)
-ENGINE_CONTAINER=$(CONTAINER_HOST=unix:///run/user/1000/podman/dagger-machine-api.sock podman ps -a | grep dagger-engine | awk '{print $1}')
+ENGINE_CONTAINER=$(CONTAINER_HOST=unix:///run/user/$UID/podman/dagger-machine-api.sock podman ps -a | grep dagger-engine | awk '{print $1}' | head -1)
 
 # View logs
-CONTAINER_HOST=unix:///run/user/1000/podman/dagger-machine-api.sock podman logs ${ENGINE_CONTAINER}
+CONTAINER_HOST=unix:///run/user/$UID/podman/dagger-machine-api.sock podman logs ${ENGINE_CONTAINER}
 
 # Follow logs in real-time
-CONTAINER_HOST=unix:///run/user/1000/podman/dagger-machine-api.sock podman logs -f ${ENGINE_CONTAINER}
+CONTAINER_HOST=unix:///run/user/$UID/podman/dagger-machine-api.sock podman logs -f ${ENGINE_CONTAINER}
 ```
 
 ### Troubleshooting
@@ -450,14 +552,20 @@ CONTAINER_HOST=unix:///run/user/1000/podman/dagger-machine-api.sock podman logs 
 The Podman machine may not be running, or the API socket may not exist. Check and fix:
 
 ```bash
-# On host: Check if machine is running
-podman machine list
+# If in toolbox, use flatpak-spawn --host to run commands on host:
+# Check if machine is running
+flatpak-spawn --host podman machine list
 
-# On host: Start machine if stopped
+# Start machine if stopped
+flatpak-spawn --host podman machine start dagger-machine
+
+# Or exit toolbox and run on host directly:
+exit
+podman machine list
 podman machine start dagger-machine
 
 # In toolbox: Verify the API socket exists
-ls -la /run/user/1000/podman/dagger-machine-api.sock
+ls -la /run/user/$UID/podman/dagger-machine-api.sock
 ```
 
 **Issue: "rootless: true" still showing when using dagger**
@@ -466,19 +574,46 @@ Verify the alias is working correctly and the API socket is accessible:
 
 ```bash
 # Check that the API socket exists
-ls -la /run/user/1000/podman/dagger-machine-api.sock
+ls -la /run/user/$UID/podman/dagger-machine-api.sock
 
 # Manually test with the API socket
-CONTAINER_HOST=unix:///run/user/1000/podman/dagger-machine-api.sock podman info | grep rootless
+CONTAINER_HOST=unix:///run/user/$UID/podman/dagger-machine-api.sock podman info | grep rootless
 # Should show: rootless: false
 
-# Verify the alias is set correctly
+# Verify the function is set correctly
 type dagger
-# Should show: alias dagger='DOCKER_HOST=unix:///run/user/1000/podman/dagger-machine-api.sock dagger'
+# Should show: dagger is a function
 
 # Test Dagger with the API socket directly
-DOCKER_HOST=unix:///run/user/1000/podman/dagger-machine-api.sock dagger version
+DOCKER_HOST=unix:///run/user/$UID/podman/dagger-machine-api.sock dagger version
 ```
+
+**Issue: "Cannot execute commands on host" or "flatpak-spawn: command not found"**
+
+The `_dagger_ensure_machine` function needs a way to execute commands on the host. Check and fix:
+
+```bash
+# In toolbox: Check if flatpak-spawn is available
+command -v flatpak-spawn
+
+# If not available, try host-spawn as an alternative
+command -v host-spawn
+
+# If neither is available, install host-spawn in the toolbox:
+# (Note: This may not work in all toolbox configurations)
+dnf install host-spawn
+
+# Or manually start the machine on the host when needed:
+# Exit toolbox and run on host:
+exit
+podman machine start dagger-machine
+```
+
+**Note**: If `flatpak-spawn` is not available in your toolbox, the automatic machine starting will fail. You'll need to manually start the machine on the host before using Dagger. The function will still work for checking if the machine is running and setting up the correct `DOCKER_HOST`.
+
+**Issue: "qemu-system-x86_64: executable file not found" when running `podman machine` from toolbox**
+
+This error occurs because `podman machine` commands try to execute QEMU locally, even when using `podman-remote`. The solution is to use `flatpak-spawn --host` (or `host-spawn`) to execute the command on the host, as shown in the `_host_exec` helper function. If you see this error, it means the function isn't using `_host_exec` properly, or `flatpak-spawn`/`host-spawn` is not available.
 
 ## Considerations and Best Practices
 
