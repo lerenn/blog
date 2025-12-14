@@ -1,6 +1,6 @@
 ---
 title: "K8s Homelab: Deploying the LGTM Observability Stack"
-date: 2025-01-15T10:00:00+01:00
+date: 2025-11-05T10:00:00+01:00
 description: "Deploying Loki, Grafana, Tempo, and Mimir with Grafana Alloy for comprehensive observability in our Kubernetes homelab"
 tags: ["homelab", "kubernetes", "observability", "lgtm", "loki", "grafana", "tempo", "mimir", "alloy", "monitoring", "ansible"]
 categories: ["homelab", "kubernetes"]
