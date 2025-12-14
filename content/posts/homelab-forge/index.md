@@ -40,7 +40,7 @@ Forgejo is designed to be simple to deploy and maintain, making it ideal for per
 ```mermaid
 graph TB
     subgraph "Kubernetes Cluster"
-        Forgejo[Forgejo Deployment<br/>forge.lab.home.lerenn.net]
+        Forgejo[Forgejo Deployment<br/>forge.lab.x.y.z]
         PVC[PersistentVolumeClaim<br/>10Gi NVMe Storage]
         ConfigMap[ConfigMap<br/>app.ini Configuration]
         TLSSecret[TLS Secret<br/>Certificate Chain]
@@ -100,7 +100,7 @@ forge_image: codeberg.org/forgejo/forgejo:13.0.3
 forge_service_name: forge
 forge_service_port: 3000
 forge_replicas: 1
-forge_hostname: forge.lab.home.lerenn.net
+forge_hostname: forge.lab.x.y.z
 
 # Storage configuration
 forge_storage_class: lg-nvme-raw-x3-retain
@@ -108,10 +108,10 @@ forge_storage_size: 10Gi
 
 # Forgejo configuration
 forge_app_name: Forgejo
-forge_domain: forge.lab.home.lerenn.net
+forge_domain: forge.lab.x.y.z
 forge_http_port: 3000
 forge_ssh_port: 22
-forge_ssh_domain: forge.lab.home.lerenn.net
+forge_ssh_domain: forge.lab.x.y.z
 
 # Resource limits
 forge_resources:
@@ -354,7 +354,7 @@ The Forgejo image's default entrypoint (`/usr/bin/entrypoint`) properly configur
 
 ## Challenge 3: Certificate Not Recognized
 
-**Problem**: When accessing `https://forge.lab.home.lerenn.net`, the browser showed a security warning, unlike other services (Longhorn, Grafana) which were trusted.
+**Problem**: When accessing `https://forge.lab.x.y.z`, the browser showed a security warning, unlike other services (Longhorn, Grafana) which were trusted.
 
 **Root Cause**: The forge certificate was missing **Subject Alternative Names (SAN)** extensions. Modern browsers require SAN extensions in certificates, and the certificate was generated without them.
 
@@ -371,7 +371,7 @@ openssl x509 -req -in forge.csr \
   -out forge.crt \
   -days 3650 \
   -extensions v3_req \
-  -extfile <(echo -e "[v3_req]\nkeyUsage = keyEncipherment, dataEncipherment\nextendedKeyUsage = serverAuth\nsubjectAltName = @alt_names\n[alt_names]\nDNS.1 = forge.lab.home.lerenn.net")
+  -extfile <(echo -e "[v3_req]\nkeyUsage = keyEncipherment, dataEncipherment\nextendedKeyUsage = serverAuth\nsubjectAltName = @alt_names\n[alt_names]\nDNS.1 = forge.lab.x.y.z")
 ```
 
 Then update the Kubernetes TLS secret with the new certificate:
@@ -459,7 +459,7 @@ services:
 The router role automatically creates a CNAME record:
 
 ```dnsmasq
-cname=forge.lab.home.lerenn.net,cluster.lab.home.lerenn.net
+cname=forge.lab.x.y.z,cluster.lab.x.y.z
 ```
 
 This resolves to the cluster VIP, which is handled by MetalLB and Traefik.
@@ -471,7 +471,7 @@ This resolves to the cluster VIP, which is handled by MetalLB and Traefik.
 Once deployed, Forgejo is accessible at:
 
 ```text
-https://forge.lab.home.lerenn.net
+https://forge.lab.x.y.z
 ```
 
 The first access will show the initial setup page where you can:
@@ -485,10 +485,10 @@ After setup, you can use Forgejo like any Git hosting service:
 
 ```bash
 # Clone a repository
-git clone https://forge.lab.home.lerenn.net/username/repo.git
+git clone https://forge.lab.x.y.z/username/repo.git
 
 # Push to repository
-git remote add forge https://forge.lab.home.lerenn.net/username/repo.git
+git remote add forge https://forge.lab.x.y.z/username/repo.git
 git push forge main
 ```
 
@@ -498,10 +498,10 @@ Forgejo also supports SSH access for Git operations:
 
 ```bash
 # Clone via SSH
-git clone git@forge.lab.home.lerenn.net:username/repo.git
+git clone git@forge.lab.x.y.z:username/repo.git
 
 # Push via SSH
-git remote add forge git@forge.lab.home.lerenn.net:username/repo.git
+git remote add forge git@forge.lab.x.y.z:username/repo.git
 git push forge main
 ```
 
