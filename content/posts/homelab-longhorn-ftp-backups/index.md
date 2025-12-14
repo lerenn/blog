@@ -1,6 +1,6 @@
 ---
 title: "K8s Homelab: Longhorn Backups with FTP Storage and Encryption"
-date: 2025-01-15T10:00:00+01:00
+date: 2025-12-05T10:00:00+01:00
 description: "Integrating Longhorn backups with FTP storage using an S3-to-FTP bridge service and enabling encryption for secure off-site backups"
 tags: ["homelab", "kubernetes", "longhorn", "backup", "ftp", "s3", "encryption", "ansible", "storage"]
 categories: ["homelab", "kubernetes"]
