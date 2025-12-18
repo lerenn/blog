@@ -1,8 +1,8 @@
 ---
-title: "K8s Homelab: Longhorn Backups with FTP Storage and Encryption"
-date: 2025-12-05T10:00:00+01:00
-description: "Integrating Longhorn backups with FTP storage using an S3-to-FTP bridge service and enabling encryption for secure off-site backups"
-tags: ["homelab", "kubernetes", "longhorn", "backup", "ftp", "s3", "encryption", "ansible", "storage"]
+title: "K8s Homelab: Longhorn Backups with RustFS and Encrypted FTP Off-Site Storage"
+date: 2025-12-18T10:00:00+01:00
+description: "Setting up a complete backup infrastructure with RustFS S3-compatible storage on a Raspberry Pi, encrypted off-site backups to Box.com FTP, and automated Longhorn integration"
+tags: ["homelab", "kubernetes", "longhorn", "backup", "ftp", "s3", "rustfs", "rclone", "encryption", "ansible", "storage", "raspberry-pi"]
 categories: ["homelab", "kubernetes"]
 ---
 
@@ -10,329 +10,426 @@ categories: ["homelab", "kubernetes"]
 
 ## The Backup Storage Challenge
 
-After optimizing storage usage and implementing manual backup procedures, the next critical step was setting up **automated, off-site backups** for Longhorn volumes. Longhorn supports S3-compatible storage for backups, but I had access to **unlimited FTP storage** instead of traditional S3 services.
+After optimizing storage usage and implementing manual backup procedures, the next critical step was setting up **automated, off-site backups** for Longhorn volumes. Longhorn supports S3-compatible storage for backups, but I needed a solution that:
 
-The challenge: **How do we leverage unlimited FTP storage for Longhorn backups when Longhorn only supports S3-compatible APIs?**
+1. **Runs on-premises** - A dedicated backup server (Raspberry Pi) with local storage
+2. **Provides S3-compatible API** - For seamless Longhorn integration
+3. **Encrypts backups** - Secure data at rest and in transit
+4. **Syncs to cloud storage** - Off-site backup to Box.com FTP for disaster recovery
+5. **Is fully automated** - Infrastructure as Code with Ansible
 
-## The Solution: S3-to-FTP Bridge Service
+## The Solution: RustFS + rclone Architecture
 
-I developed a custom service called [s3-to-ftp](https://github.com/lerenn/s3-to-ftp) that acts as a translation layer between S3-compatible APIs and FTP storage. This service:
+I implemented a multi-layered backup solution:
 
-- Exposes an S3-compatible API that Longhorn can use
-- Translates S3 operations (PUT, GET, DELETE) to FTP operations
-- Supports encryption at rest for secure backups
-- Runs as a Kubernetes deployment in the cluster
+- **RustFS**: S3-compatible object storage running on a Raspberry Pi (backup1)
+- **4TB HDD**: Local storage backend for RustFS
+- **Longhorn Integration**: Direct S3 API connection to RustFS
+- **rclone**: Encrypted sync from HDD to Box.com FTP
+- **Ansible Automation**: Complete infrastructure automation
 
-This post documents how I integrated this service into the Longhorn Ansible role to enable automated, encrypted backups to FTP storage.
+This post documents the complete setup process, architecture, and how all components work together.
 
-## Architecture: S3-to-FTP Integration
+## Architecture: Complete Backup Infrastructure
 
 ```mermaid
 graph TB
     subgraph "Kubernetes Cluster"
         Longhorn[Longhorn Manager<br/>Backup Operations]
-        S3ToFTP[s3-to-ftp Service<br/>S3 API → FTP]
-        FTPSecret[FTP Credentials Secret]
-        S3Secret[S3 Credentials Secret]
+        BackupTarget[BackupTarget CRD<br/>S3 Endpoint]
     end
     
-    subgraph "External FTP Server"
-        FTPServer[FTP Server<br/>Unlimited Storage]
+    subgraph "backup1.lab.x.y.z<br/>(Raspberry Pi)"
+        RustFS[RustFS Container<br/>S3-Compatible API<br/>Port 9000]
+        HDD[4TB HDD<br/>/mnt/backup-hdd<br/>RustFS Data Storage]
+        Rclone[rclone Service<br/>Encrypted Sync<br/>Daily at 6 AM UTC]
     end
     
-    Longhorn -->|S3 API Calls| S3ToFTP
-    S3ToFTP -->|Reads| FTPSecret
-    S3ToFTP -->|FTP Operations| FTPServer
-    Longhorn -->|Reads| S3Secret
-    S3Secret -.->|Contains Endpoint| S3ToFTP
+    subgraph "Box.com FTP"
+        FTPStorage[FTP Storage<br/>Encrypted Backups<br/>/Homelab]
+    end
     
-    style S3ToFTP fill:#e1f5ff
-    style FTPServer fill:#fff4e1
+    Longhorn -->|S3 API Calls<br/>http://backup1:9000| RustFS
+    RustFS -->|Stores Data| HDD
+    Rclone -->|Reads Encrypted| HDD
+    Rclone -->|FTPS Upload<br/>Encrypted| FTPStorage
+    
+    style RustFS fill:#e1f5ff
+    style HDD fill:#fff4e1
+    style FTPStorage fill:#ffe1f5
+    style Rclone fill:#e1ffe1
 ```
 
-**Flow**:
-1. Longhorn performs backup operations using S3-compatible API calls
-2. s3-to-ftp service receives these calls and translates them to FTP operations
-3. Files are stored on the FTP server (optionally encrypted)
-4. Longhorn authenticates using S3 credentials that point to the s3-to-ftp service
+**Data Flow**:
+1. Longhorn performs backup operations using S3-compatible API calls to RustFS
+2. RustFS stores backup data on the local 4TB HDD
+3. rclone syncs encrypted data from the HDD to Box.com FTP daily
+4. All data is encrypted using rclone's crypt remote before upload
 
-## Implementation: Integrating s3-to-ftp into Longhorn Role
+## Implementation: Ansible Role Structure
 
-The integration was added directly to the existing Longhorn Ansible role, following the established patterns from other roles (registries, LGTM stack, etc.).
+The backup infrastructure is implemented as an Ansible role (`machines/roles/backup`) with a dedicated playbook (`machines/playbooks/setup-backup.yaml`).
 
 ### Role Structure
 
-The s3-to-ftp integration extends the Longhorn role:
-
 ```text
-cluster/roles/longhorn/
-├── defaults/main.yaml                    # Added s3-to-ftp configuration
+machines/roles/backup/
+├── defaults/main.yaml              # Configuration variables
 ├── tasks/
-│   ├── install.yaml                      # Added s3-to-ftp deployment tasks
-│   └── uninstall.yaml                    # Added cleanup tasks
+│   ├── main.yaml                   # Orchestrates task execution
+│   ├── prerequisites.yaml          # System prerequisites
+│   ├── hdd-setup.yaml              # HDD mounting and formatting checks
+│   ├── install.yaml                # RustFS and rclone installation
+│   └── configure.yaml              # Bucket creation, rclone config, systemd services
 └── templates/
-    ├── s3-to-ftp-deployment.yaml.j2      # New: Deployment template
-    └── s3-to-ftp-service.yaml.j2         # New: Service template
+    ├── rustfs.service.j2           # RustFS systemd service
+    ├── rclone.conf.j2              # rclone configuration
+    ├── rclone-sync.service.j2      # rclone sync systemd service
+    └── rclone-sync.timer.j2        # rclone sync systemd timer
 ```
 
 ### Configuration Variables
 
-Added configuration options to `defaults/main.yaml`:
+The role uses variables defined in `defaults/main.yaml`:
 
 ```yaml
-# s3-to-ftp service configuration
-s3_to_ftp_enabled: true
-s3_to_ftp_image: ghcr.io/lerenn/s3-to-ftp:v1.2.1
-s3_to_ftp_replicas: 1
-s3_to_ftp_service_port: 9000
-s3_to_ftp_encryption_enabled: true
-s3_to_ftp_resources:
-  requests:
-    cpu: 100m
-    memory: 128Mi
-  limits:
-    cpu: 500m
-    memory: 512Mi
+# HDD Configuration
+backup_hdd_device: /dev/sda
+backup_hdd_partition: "{{ backup_hdd_device }}1"
+backup_hdd_mount_point: /mnt/backup-hdd
+backup_hdd_filesystem: ext4
+backup_hdd_label: backup-hdd
+
+# RustFS Configuration
+rustfs_data_dir: /var/lib/rustfs/data
+rustfs_logs_dir: /var/lib/rustfs/logs
+rustfs_port: 9000
+rustfs_console_port: 9001
+rustfs_image: rustfs/rustfs:latest
+rustfs_admin_user: ""
+rustfs_admin_password: ""
+
+# RustFS S3 Configuration
+rustfs_bucket_name: longhorn-backups
+rustfs_region: fr-home-1
+rustfs_s3_access_key: ""
+rustfs_s3_secret_key: ""
+
+# rclone Configuration
+rclone_encryption_enabled: true
+rclone_encryption_key: ""
+rclone_box_remote_name: box
+rclone_config_dir: /etc/rclone
+rclone_sync_schedule: "0 6 * * *"  # Daily at 6 AM UTC
+rclone_sync_source: "{{ backup_hdd_mount_point }}/rustfs/data"
+rclone_box_ftp_host: ""
+rclone_box_ftp_port: 21
+rclone_box_ftp_user: ""
+rclone_box_ftp_password: ""
+rclone_box_ftp_path: "/Homelab"
 ```
 
 **Key Settings**:
-- `s3_to_ftp_enabled`: Toggle to enable/disable the service
-- `s3_to_ftp_image`: Container image for the service
-- `s3_to_ftp_encryption_enabled`: Enable encryption for backups
-- `s3_to_ftp_resources`: Resource limits for the service
+- `backup_hdd_device`: The HDD device path (must be formatted manually before running playbook)
+- `rustfs_bucket_name`: S3 bucket name for Longhorn backups
+- `rclone_encryption_enabled`: Enable encryption for off-site backups
+- `rclone_sync_schedule`: Cron schedule for daily syncs (UTC time)
 
 ### Secrets Management
 
-FTP and S3 credentials are stored in `cluster/secrets/longhorn.yaml`:
+Sensitive credentials are stored in `machines/secrets/backup.yaml`:
 
 ```yaml
-# FTP credentials for s3-to-ftp service
-ftp_host: "ftp.example.com"
-ftp_port: 21
-ftp_user: "your-ftp-username"
-ftp_password: "your-ftp-password"
-ftp_path: "/Homelab"
+---
+# Secrets for backup role
+# This file is encrypted with git-crypt
 
-# S3 credentials for Longhorn backup target
-# These are the credentials Longhorn will use to authenticate with s3-to-ftp
-s3_access_key_id: "your-s3-access-key-id"
-s3_secret_access_key: "your-s3-secret-key"
+# RustFS Admin Credentials
+rustfs_admin_user: "rustfsadmin"
+rustfs_admin_password: "your-secure-password"
 
-# Backup target configuration
-backup_bucket_name: "longhorn"
-backup_region: "box"
+# S3 Access Keys (for Longhorn)
+s3_access_key: "your-s3-access-key"
+s3_secret_key: "your-s3-secret-key"
 
-# Encryption key for s3-to-ftp (64 hex characters = 32 bytes)
-encryption_key: "your-64-character-hex-encryption-key"
+# rclone Encryption Key
+# 32-byte hex-encoded key for encrypting data before syncing to Box.com
+# Generate with: openssl rand -hex 32
+rclone_encryption_key: "your-64-character-hex-encryption-key"
+
+# Box.com FTP Credentials
+box_ftp_host: "ftp.box.com"
+box_ftp_port: 21
+box_ftp_user: "your-ftp-username"
+box_ftp_password: "your-ftp-password"
+box_ftp_path: "/Homelab"
 ```
 
-**Security Note**: The `longhorn.yaml` file contains sensitive credentials and should be:
-- Stored securely (not committed to version control)
-- Encrypted at rest
+**Security Note**: The `backup.yaml` file contains sensitive credentials and should be:
+- Encrypted with git-crypt (or similar)
+- Stored securely (not committed to version control unencrypted)
 - Access-controlled appropriately
+- Backed up separately from the backups themselves
 
-### Deployment Template
+## Step-by-Step Setup Process
 
-The s3-to-ftp deployment template (`s3-to-ftp-deployment.yaml.j2`) creates a Kubernetes Deployment:
+### Step 1: Prerequisites
+
+The playbook handles most prerequisites automatically, but the HDD must be formatted manually first:
+
+```bash
+# Format the HDD partition (run on backup1)
+sudo mkfs.ext4 -L backup-hdd /dev/sda1
+```
+
+**Why manual formatting?** This is a destructive operation that should be done intentionally, not automatically by Ansible.
+
+### Step 2: HDD Setup
+
+The `hdd-setup.yaml` tasks handle:
+
+1. **Verify HDD is formatted**: Checks if the partition has a filesystem
+2. **Create mount point**: Creates `/mnt/backup-hdd` directory
+3. **Mount HDD**: Mounts the partition temporarily
+4. **Add to fstab**: Adds persistent mount entry using UUID
+5. **Ensure mounted**: Verifies the HDD is mounted
+6. **Create RustFS data directory**: Creates the directory structure on the HDD
 
 ```yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: s3-to-ftp
-  namespace: {{ longhorn_namespace }}
-spec:
-  replicas: {{ s3_to_ftp_replicas }}
+- name: Check if HDD partition is formatted
+  command: blkid {{ backup_hdd_partition }}
+  register: hdd_blkid_check
+  failed_when: false
+
+- name: Fail if HDD partition is not formatted
+  fail:
+    msg: |
+      HDD partition {{ backup_hdd_partition }} is not formatted.
+      Please format it manually before running this playbook
+  when: hdd_blkid_check.rc != 0
+
+- name: Add fstab entry for HDD
+  lineinfile:
+    path: /etc/fstab
+    line: "UUID={{ hdd_uuid.stdout }} {{ backup_hdd_mount_point }} {{ backup_hdd_filesystem }} defaults,noatime 0 2"
+```
+
+### Step 3: RustFS Installation
+
+RustFS is installed and configured via Docker:
+
+```yaml
+- name: Pull RustFS Docker image
+  command: docker pull {{ rustfs_image }}
+
+- name: Create RustFS systemd service
   template:
-    spec:
-      containers:
-      - name: s3-to-ftp
-        image: {{ s3_to_ftp_image }}
-        ports:
-        - containerPort: {{ s3_to_ftp_service_port }}
-        env:
-        - name: FTP_HOST
-          valueFrom:
-            secretKeyRef:
-              name: s3-to-ftp-ftp-credentials
-              key: ftp_host
-        - name: FTP_PORT
-          valueFrom:
-            secretKeyRef:
-              name: s3-to-ftp-ftp-credentials
-              key: ftp_port
-        - name: FTP_USER
-          valueFrom:
-            secretKeyRef:
-              name: s3-to-ftp-ftp-credentials
-              key: ftp_user
-        - name: FTP_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: s3-to-ftp-ftp-credentials
-              key: ftp_password
-        - name: FTP_ROOT_PATH
-          valueFrom:
-            secretKeyRef:
-              name: s3-to-ftp-ftp-credentials
-              key: ftp_path
-        - name: S3_ACCESS_KEY
-          valueFrom:
-            secretKeyRef:
-              name: s3-to-ftp-ftp-credentials
-              key: s3_access_key
-        - name: S3_SECRET_KEY
-          valueFrom:
-            secretKeyRef:
-              name: s3-to-ftp-ftp-credentials
-              key: s3_secret_key
-{% if s3_to_ftp_encryption_enabled | bool and encryption_key is defined and encryption_key | length > 0 %}
-        - name: ENCRYPTION_KEY
-          valueFrom:
-            secretKeyRef:
-              name: s3-to-ftp-ftp-credentials
-              key: encryption_key
-{% endif %}
-        resources:
-          requests:
-            cpu: {{ s3_to_ftp_resources.requests.cpu }}
-            memory: {{ s3_to_ftp_resources.requests.memory }}
-          limits:
-            cpu: {{ s3_to_ftp_resources.limits.cpu }}
-            memory: {{ s3_to_ftp_resources.limits.memory }}
-        livenessProbe:
-          httpGet:
-            path: /health
-            port: {{ s3_to_ftp_service_port }}
-          initialDelaySeconds: 30
-          periodSeconds: 30
-        readinessProbe:
-          httpGet:
-            path: /health
-            port: {{ s3_to_ftp_service_port }}
-          initialDelaySeconds: 10
-          periodSeconds: 10
+    src: rustfs.service.j2
+    dest: /etc/systemd/system/rustfs.service
+
+- name: Start and enable RustFS service
+  systemd:
+    name: rustfs
+    state: started
+    enabled: yes
+```
+
+The RustFS systemd service template (`rustfs.service.j2`):
+
+```ini
+[Unit]
+Description=RustFS S3-Compatible Object Storage
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+ExecStartPre=-/usr/bin/docker stop rustfs
+ExecStartPre=-/usr/bin/docker rm rustfs
+ExecStart=/usr/bin/docker run --name rustfs \
+  --rm \
+  -p {{ rustfs_port }}:9000 \
+  -p {{ rustfs_console_port }}:9001 \
+  -v {{ rustfs_data_dir }}:/data \
+  -v {{ rustfs_logs_dir }}:/logs \
+  -e RUSTFS_ACCESS_KEY={{ rustfs_admin_user }} \
+  -e RUSTFS_SECRET_KEY={{ rustfs_admin_password }} \
+  {{ rustfs_image }}
+ExecStop=/usr/bin/docker stop rustfs
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
 ```
 
 **Key Features**:
-- **Environment Variables**: All configuration comes from Kubernetes secrets
-- **Conditional Encryption**: Encryption key is only added if encryption is enabled
-- **Health Checks**: Liveness and readiness probes ensure service availability
-- **Resource Limits**: Prevents resource exhaustion
+- Runs as a Docker container
+- Exposes S3 API on port 9000
+- Exposes console UI on port 9001
+- Stores data on the mounted HDD
+- Auto-restarts on failure
 
-### Service Template
+### Step 4: Bucket Creation
 
-The service template (`s3-to-ftp-service.yaml.j2`) exposes the s3-to-ftp service:
+After RustFS is running, the playbook creates the S3 bucket:
 
 ```yaml
-apiVersion: v1
-kind: Service
-metadata:
-  name: s3-to-ftp
-  namespace: {{ longhorn_namespace }}
-spec:
-  type: ClusterIP
-  ports:
-  - port: {{ s3_to_ftp_service_port }}
-    targetPort: {{ s3_to_ftp_service_port }}
-    protocol: TCP
-    name: s3-api
-  selector:
-    app: s3-to-ftp
+- name: Create RustFS bucket using AWS CLI
+  shell: |
+    export AWS_ACCESS_KEY_ID="{{ rustfs_admin_user_actual }}"
+    export AWS_SECRET_ACCESS_KEY="{{ rustfs_admin_password_actual }}"
+    export AWS_DEFAULT_REGION="{{ rustfs_region }}"
+    aws --endpoint-url=http://localhost:{{ rustfs_port }} s3 mb s3://{{ rustfs_bucket_name }} 2>&1 || \
+    (aws --endpoint-url=http://localhost:{{ rustfs_port }} s3 ls s3://{{ rustfs_bucket_name }} 2>&1 && echo "Bucket already exists")
+  register: bucket_create_result
+  changed_when: "'Bucket already exists' not in bucket_create_result.stdout and 'make_bucket' in bucket_create_result.stdout"
 ```
 
-The service uses `ClusterIP` type, making it accessible only within the cluster via Kubernetes DNS: `s3-to-ftp.longhorn-system.svc.cluster.local:9000`
+**Idempotency**: The task checks if the bucket exists before creating it, making the playbook idempotent.
 
-### Installation Tasks
+### Step 5: rclone Configuration
 
-The installation process in `tasks/install.yaml` follows this sequence:
-
-1. **Load Secrets**: Load FTP and S3 credentials from `longhorn.yaml`
-2. **Create FTP Credentials Secret**: Create Kubernetes secret with FTP connection details
-3. **Create S3 Credentials Secret**: Create secret for Longhorn to authenticate with s3-to-ftp
-4. **Deploy s3-to-ftp**: Template and deploy the deployment and service
-5. **Wait for Readiness**: Ensure the service is ready before configuring backup target
-6. **Configure BackupTarget**: Update Longhorn BackupTarget to use s3-to-ftp
-
-#### Step 1: Load and Resolve Credentials
+rclone is configured to sync encrypted data to Box.com FTP:
 
 ```yaml
-- name: Load Longhorn secrets from cluster/secrets/longhorn.yaml
+- name: Obscure rclone encryption key for crypt remote
+  command: rclone obscure "{{ rclone_encryption_key }}"
+  register: rclone_encryption_key_obscured
+  when:
+    - rclone_encryption_enabled | default(false) | bool
+    - rclone_encryption_key | default('') | length > 0
+
+- name: Configure rclone Box.com remote (FTP)
+  template:
+    src: rclone.conf.j2
+    dest: "{{ rclone_config_dir }}/rclone.conf"
+    mode: '0600'
+```
+
+The rclone configuration template (`rclone.conf.j2`):
+
+```ini
+[{{ rclone_box_remote_name }}]
+type = ftp
+host = {{ rclone_box_ftp_host }}
+user = {{ rclone_box_ftp_user }}
+pass = {{ rclone_box_ftp_password_obscured_value }}
+port = {{ rclone_box_ftp_port }}
+explicit_tls = true
+
+{% if rclone_encryption_enabled and rclone_encryption_key_obscured_value is defined %}
+# Encrypted remote using rclone_encryption_key
+# This encrypts files using your rclone_encryption_key before uploading to Box.com
+# rclone_encryption_key is the ONLY key you need to decrypt the data
+[{{ rclone_box_remote_name }}-encrypted]
+type = crypt
+remote = {{ rclone_box_remote_name }}:{{ rclone_box_ftp_path }}
+filename_encryption = standard
+password = {{ rclone_encryption_key_obscured_value }}
+password2 = {{ rclone_encryption_key_obscured_value }}
+{% endif %}
+```
+
+**Key Features**:
+- **FTPS**: Uses explicit TLS (`explicit_tls = true`) as required by Box.com
+- **Password Obscuring**: Passwords are obscured (base64-encoded) using `rclone obscure`
+- **Encryption**: Uses rclone's `crypt` remote for client-side encryption
+- **Filename Encryption**: Encrypts both file contents and filenames
+
+### Step 6: Automated Sync Setup
+
+A systemd timer runs rclone sync daily:
+
+```yaml
+- name: Create rclone sync systemd service
+  template:
+    src: rclone-sync.service.j2
+    dest: /etc/systemd/system/rclone-sync.service
+
+- name: Create rclone sync systemd timer
+  template:
+    src: rclone-sync.timer.j2
+    dest: /etc/systemd/system/rclone-sync.timer
+
+- name: Enable and start rclone sync timer
+  systemd:
+    name: rclone-sync.timer
+    enabled: yes
+    state: started
+```
+
+The rclone sync service (`rclone-sync.service.j2`):
+
+```ini
+[Unit]
+Description=rclone sync to Box.com
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/bin/rclone sync \
+  --config {{ rclone_config_dir }}/rclone.conf \
+  --log-file {{ rustfs_logs_dir }}/rclone-sync.log \
+  --log-level INFO \
+  --stats 10m \
+  --transfers 4 \
+  --checkers 8 \
+  --progress \
+  "{{ rclone_sync_source }}" \
+  "{{ rclone_box_remote_name }}-encrypted:{{ rclone_box_ftp_path }}"
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+```
+
+The timer (`rclone-sync.timer.j2`):
+
+```ini
+[Unit]
+Description=rclone sync to Box.com (timer)
+Requires=rclone-sync.service
+
+[Timer]
+OnCalendar={{ rclone_sync_schedule }}
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+**Sync Behavior**:
+- **Incremental**: Only changed files are synced
+- **Encrypted**: All data is encrypted before upload
+- **Logged**: Sync operations are logged to `/var/lib/rustfs/logs/rclone-sync.log`
+- **Scheduled**: Runs daily at 6 AM UTC by default
+
+## Longhorn Integration
+
+Longhorn is configured to use RustFS as its backup target via the `longhorn` Ansible role.
+
+### BackupTarget Configuration
+
+The Longhorn role creates a BackupTarget CRD pointing to RustFS:
+
+```yaml
+# In cluster/roles/longhorn/tasks/install.yaml
+- name: Load backup role defaults to get S3 region
   include_vars:
-    file: "{{ playbook_dir }}/../secrets/longhorn.yaml"
-    name: longhorn_secrets
-  no_log: true
+    file: "{{ playbook_dir }}/../../machines/roles/backup/defaults/main.yaml"
+    name: backup_defaults
 
-- name: Resolve FTP credentials from secrets or use defaults
+- name: Set S3 backup credentials and region from secrets/defaults
   set_fact:
-    ftp_host: "{{ longhorn_secrets.ftp_host | default('') }}"
-    ftp_port: "{{ longhorn_secrets.ftp_port | default(21) | string }}"
-    ftp_user: "{{ longhorn_secrets.ftp_user | default('') }}"
-    ftp_password: "{{ longhorn_secrets.ftp_password | default('') }}"
-    ftp_path: "{{ longhorn_secrets.ftp_path | default('') }}"
-    encryption_key: "{{ longhorn_secrets.encryption_key | default('') }}"
-    s3_access_key_id: "{{ longhorn_secrets.s3_access_key_id | default('') }}"
-    s3_secret_access_key: "{{ longhorn_secrets.s3_secret_access_key | default('') }}"
-    backup_bucket_name: "{{ longhorn_secrets.backup_bucket_name | default('longhorn-backups') }}"
-    backup_region: "{{ longhorn_secrets.backup_region | default('us-east-1') }}"
-  when: s3_to_ftp_enabled | bool
-```
+    s3_backup_access_key: "{{ backup_secrets.rustfs_admin_user | default('') }}"
+    s3_backup_secret_key: "{{ backup_secrets.rustfs_admin_password | default('') }}"
+    s3_backup_region_actual: "{{ backup_defaults.rustfs_region | default(s3_backup_region) }}"
 
-#### Step 2: Create Kubernetes Secrets
-
-The credentials are stored in Kubernetes secrets for security:
-
-```yaml
-- name: Set FTP credentials secret data
-  set_fact:
-    s3_to_ftp_secret_data:
-      ftp_host: "{{ ftp_host }}"
-      ftp_port: "{{ ftp_port }}"
-      ftp_user: "{{ ftp_user }}"
-      ftp_password: "{{ ftp_password }}"
-      ftp_path: "{{ ftp_path }}"
-  when: s3_to_ftp_enabled | bool
-
-- name: Add S3 credentials to FTP credentials secret data
-  set_fact:
-    s3_to_ftp_secret_data: "{{ s3_to_ftp_secret_data | combine({'s3_access_key': s3_access_key_id, 's3_secret_key': s3_secret_access_key}) }}"
-  when:
-    - s3_to_ftp_enabled | bool
-    - s3_access_key_id is defined
-    - s3_access_key_id | length > 0
-
-- name: Add encryption key to FTP credentials secret data
-  set_fact:
-    s3_to_ftp_secret_data: "{{ s3_to_ftp_secret_data | combine({'encryption_key': encryption_key}) }}"
-  when:
-    - s3_to_ftp_enabled | bool
-    - s3_to_ftp_encryption_enabled | bool
-    - encryption_key is defined
-    - encryption_key | length > 0
-
-- name: Create FTP credentials secret for s3-to-ftp
-  kubernetes.core.k8s:
-    state: present
-    resource_definition:
-      apiVersion: v1
-      kind: Secret
-      metadata:
-        name: s3-to-ftp-ftp-credentials
-        namespace: "{{ longhorn_namespace }}"
-      type: Opaque
-      stringData: "{{ s3_to_ftp_secret_data }}"
-  when: s3_to_ftp_enabled | bool
-  no_log: true
-```
-
-**Note**: The `no_log: true` flag prevents Ansible from logging sensitive credential values.
-
-#### Step 3: Create S3 Credentials for Longhorn
-
-Longhorn needs S3 credentials that point to the s3-to-ftp service:
-
-```yaml
-- name: Create S3 credentials secret for Longhorn backup target
+- name: Create S3 backup target credentials secret
   kubernetes.core.k8s:
     state: present
     resource_definition:
@@ -343,54 +440,9 @@ Longhorn needs S3 credentials that point to the s3-to-ftp service:
         namespace: "{{ longhorn_namespace }}"
       type: Opaque
       stringData:
-        AWS_ACCESS_KEY_ID: "{{ s3_access_key_id }}"
-        AWS_SECRET_ACCESS_KEY: "{{ s3_secret_access_key }}"
-        AWS_ENDPOINTS: "http://s3-to-ftp.{{ longhorn_namespace }}.svc.cluster.local:{{ s3_to_ftp_service_port }}"
-  when: s3_to_ftp_enabled | bool
-  no_log: true
-```
-
-**Key Point**: The `AWS_ENDPOINTS` field tells Longhorn to use the s3-to-ftp service instead of a real S3 endpoint.
-
-#### Step 4: Deploy s3-to-ftp Service
-
-```yaml
-- name: Template s3-to-ftp deployment
-  template:
-    src: s3-to-ftp-deployment.yaml.j2
-    dest: "{{ playbook_dir }}/../data/s3-to-ftp-deployment.yaml"
-  when: s3_to_ftp_enabled | bool
-
-- name: Deploy s3-to-ftp deployment
-  kubernetes.core.k8s:
-    state: present
-    src: "{{ playbook_dir }}/../data/s3-to-ftp-deployment.yaml"
-  when: s3_to_ftp_enabled | bool
-
-- name: Wait for s3-to-ftp pods to be ready
-  kubernetes.core.k8s_info:
-    api_version: v1
-    kind: Pod
-    namespace: "{{ longhorn_namespace }}"
-    label_selectors:
-      - app=s3-to-ftp
-    wait_condition:
-      type: Ready
-      status: "True"
-    wait_timeout: 300
-  when: s3_to_ftp_enabled | bool
-```
-
-#### Step 5: Configure Longhorn BackupTarget
-
-After the s3-to-ftp service is ready, configure Longhorn's BackupTarget:
-
-```yaml
-- name: Set backup target URL and credential secret when s3-to-ftp is enabled
-  set_fact:
-    backup_target_url: "s3://{{ backup_bucket_name }}@{{ backup_region }}/"
-    backup_target_credential_secret: "longhorn-backup-s3-credentials"
-  when: s3_to_ftp_enabled | bool
+        AWS_ACCESS_KEY_ID: "{{ s3_backup_access_key }}"
+        AWS_SECRET_ACCESS_KEY: "{{ s3_backup_secret_key }}"
+        AWS_ENDPOINTS: "http://{{ s3_backup_host }}:{{ s3_backup_port }}"
 
 - name: Create or update default BackupTarget
   kubernetes.core.k8s:
@@ -401,572 +453,312 @@ After the s3-to-ftp service is ready, configure Longhorn's BackupTarget:
       metadata:
         name: default
         namespace: "{{ longhorn_namespace }}"
-      spec: "{{ backup_target_spec }}"
+      spec:
+        type: S3
+        bucketName: "{{ s3_backup_bucket }}"
+        bucketRegion: "{{ s3_backup_region_actual }}"
+        credentialSecret: "longhorn-backup-s3-credentials"
 ```
 
-The BackupTarget URL format `s3://bucket@region/` is standard S3 format, but the actual endpoint (configured in the secret) points to s3-to-ftp.
+**Configuration Variables** (in `cluster/roles/longhorn/defaults/main.yaml`):
 
-## Encryption: Securing Backups at Rest
+```yaml
+s3_backup_enabled: true
+s3_backup_host: "backup1.lab.x.y.z"
+s3_backup_port: 9000
+s3_backup_bucket: "longhorn-backups"
+s3_backup_region: "fr-home-1"
+```
 
-One of the key requirements was **encrypting backups at rest** without encrypting the running volumes. Longhorn's native encryption encrypts both volumes and backups, but we needed backups-only encryption.
+**How It Works**:
+1. Longhorn reads the BackupTarget CRD
+2. Uses credentials from `longhorn-backup-s3-credentials` secret
+3. Connects to RustFS at `http://backup1.lab.x.y.z:9000`
+4. Stores backups in the `longhorn-backups` bucket
+
+## Encryption: Securing Backups
+
+The backup solution uses **client-side encryption** via rclone's crypt remote, ensuring that:
+
+1. **Data is encrypted before upload** - Files are encrypted locally before being sent to Box.com
+2. **Single encryption key** - Only `rclone_encryption_key` is needed to decrypt backups
+3. **Filename encryption** - Both file contents and filenames are encrypted
+4. **No dependency on cloud provider** - Encryption is handled by rclone, not Box.com
 
 ### How Encryption Works
 
-The s3-to-ftp service supports encryption via the `ENCRYPTION_KEY` environment variable:
-
-- **Encryption Key Format**: 32-byte key, hex-encoded (64 hex characters)
-- **Encryption Algorithm**: AES-256-GCM (configurable in s3-to-ftp)
-- **Automatic Encryption**: All files uploaded are automatically encrypted before being stored on FTP
-- **Automatic Decryption**: Files are automatically decrypted when retrieved
-
-### Enabling Encryption
-
-Encryption is enabled by:
-
-1. **Setting the encryption key** in `cluster/secrets/longhorn.yaml`:
-   ```yaml
-   encryption_key: "your-64-character-hex-encryption-key"
-   ```
-
-2. **Enabling encryption** in `defaults/main.yaml`:
-   ```yaml
-   s3_to_ftp_encryption_enabled: true
-   ```
-
-3. **The deployment template** conditionally adds the `ENCRYPTION_KEY` environment variable:
-   ```yaml
-   {% if s3_to_ftp_encryption_enabled | bool and encryption_key is defined and encryption_key | length > 0 %}
-   - name: ENCRYPTION_KEY
-     valueFrom:
-       secretKeyRef:
-         name: s3-to-ftp-ftp-credentials
-         key: encryption_key
-   {% endif %}
-   ```
+1. **Longhorn → RustFS**: Backups are stored unencrypted on the local HDD (for performance)
+2. **rclone sync**: Reads data from HDD and encrypts it using the crypt remote
+3. **Box.com FTP**: Receives encrypted files (cannot read without the key)
+4. **Decryption**: Use `rclone_encryption_key` to decrypt files when needed
 
 ### Encryption Key Management
 
-**Important Security Considerations**:
+**Generate a secure key**:
+```bash
+# Generate a 32-byte (256-bit) key, hex-encoded
+openssl rand -hex 32
+```
 
-- **Generate a strong key**: Use a cryptographically secure random generator
-  ```bash
-  # Generate a 32-byte (256-bit) key, hex-encoded
-  openssl rand -hex 32
-  ```
+**Store securely**:
+- Store in `machines/secrets/backup.yaml` (encrypted with git-crypt)
+- Back up the key separately from backups
+- Never commit unencrypted to version control
 
-- **Store securely**: The encryption key should be:
-  - Stored in the secrets file (encrypted at rest)
-  - Backed up securely (separate from backups)
-  - Rotated periodically
-  - Never committed to version control
+**Key Loss Warning**: If `rclone_encryption_key` is lost, **encrypted backups cannot be recovered**. Ensure you have a secure backup of the key.
 
-- **Key Loss**: If the encryption key is lost, **encrypted backups cannot be recovered**. Ensure you have a secure backup of the key.
+### Decrypting Backups
 
-## Uninstall Tasks
+A helper script (`machines/scripts/download-backup-decrypt.sh`) downloads and decrypts backups:
 
-The uninstall process (`tasks/uninstall.yaml`) cleans up all s3-to-ftp resources:
+```bash
+# Download and decrypt backups
+./machines/scripts/download-backup-decrypt.sh /path/to/restore
 
-```yaml
-- name: Delete s3-to-ftp deployment
-  kubernetes.core.k8s:
-    state: absent
-    api_version: apps/v1
-    kind: Deployment
-    name: s3-to-ftp
-    namespace: "{{ longhorn_namespace }}"
+# List files without downloading
+./machines/scripts/download-backup-decrypt.sh --list
+```
 
-- name: Delete s3-to-ftp service
-  kubernetes.core.k8s:
-    state: absent
-    api_version: v1
-    kind: Service
-    name: s3-to-ftp
-    namespace: "{{ longhorn_namespace }}"
+The script:
+1. Reads FTP credentials and encryption key from `backup.yaml`
+2. Creates a temporary rclone configuration
+3. Downloads and decrypts files using rclone's crypt remote
+4. Saves decrypted files to the specified directory
 
-- name: Delete s3-to-ftp FTP credentials secret
-  kubernetes.core.k8s:
-    state: absent
-    api_version: v1
-    kind: Secret
-    name: s3-to-ftp-ftp-credentials
-    namespace: "{{ longhorn_namespace }}"
+## RustFS Storage Format
 
-- name: Delete Longhorn backup S3 credentials secret
-  kubernetes.core.k8s:
-    state: absent
-    api_version: v1
-    kind: Secret
-    name: longhorn-backup-s3-credentials
-    namespace: "{{ longhorn_namespace }}"
+RustFS uses MinIO's XL format for storing objects:
+
+- **Small files**: Stored inline in `xl.meta` files (metadata + data)
+- **Large files**: Split into multiple part files with metadata in `xl.meta`
+- **Directory structure**: Objects are stored as directories with metadata files
+
+### Extracting Inline Data
+
+For small files stored inline, use the helper script:
+
+```bash
+./machines/scripts/extract-rustfs-inline-data.sh path/to/xl.meta [output-file]
+```
+
+This extracts the actual file content from RustFS metadata files.
+
+## Testing and Verification
+
+### Verify RustFS is Running
+
+```bash
+# Check RustFS container
+ssh backup1.lab.x.y.z
+docker ps | grep rustfs
+
+# Check RustFS API
+curl http://localhost:9000
+
+# Check systemd service
+systemctl status rustfs
+```
+
+### Verify Bucket Exists
+
+```bash
+# List buckets
+export AWS_ACCESS_KEY_ID="rustfsadmin"
+export AWS_SECRET_ACCESS_KEY="your-password"
+export AWS_DEFAULT_REGION="fr-home-1"
+aws --endpoint-url=http://localhost:9000 s3 ls
+
+# List objects in bucket
+aws --endpoint-url=http://localhost:9000 s3 ls s3://longhorn-backups
+```
+
+### Test Backup Creation
+
+1. **Create a test backup in Longhorn UI**:
+   - Navigate to Longhorn UI
+   - Select a volume
+   - Click "Create Backup"
+   - Verify backup appears in the backup list
+
+2. **Verify backup on RustFS**:
+   ```bash
+   aws --endpoint-url=http://backup1.lab.x.y.z:9000 s3 ls s3://longhorn-backups --recursive
+   ```
+
+3. **Verify backup on HDD**:
+   ```bash
+   ssh backup1.lab.x.y.z
+   ls -la /mnt/backup-hdd/rustfs/data/longhorn-backups/
+   ```
+
+### Verify rclone Sync
+
+```bash
+# Check sync timer status
+ssh backup1.lab.x.y.z
+systemctl status rclone-sync.timer
+
+# Check last sync time
+systemctl list-timers rclone-sync.timer
+
+# Manually trigger sync
+systemctl start rclone-sync.service
+
+# Check sync logs
+tail -f /var/lib/rustfs/logs/rclone-sync.log
+```
+
+### Verify Encrypted Backups on Box.com
+
+```bash
+# List encrypted files (filenames are encrypted)
+rclone --config /etc/rclone/rclone.conf lsf box-encrypted:/Homelab
+
+# Download and decrypt
+./machines/scripts/download-backup-decrypt.sh ./restore-test
 ```
 
 ## Challenges and Solutions
 
-### Challenge 1: S3 API Compatibility
+### Challenge 1: Box.com FTPS Requirement
 
-**Problem**: Longhorn expects a fully S3-compatible API, but FTP has different semantics.
+**Problem**: Box.com requires FTPS (FTP over TLS), not plain FTP.
 
-**Solution**: The s3-to-ftp service implements the core S3 operations (PUT, GET, DELETE, LIST) that Longhorn uses, translating them to FTP operations. The service handles:
-- Bucket operations (creating directories on FTP)
-- Object operations (file uploads/downloads)
-- Metadata handling (stored as separate files or in object names)
+**Solution**: Configured rclone with `explicit_tls = true`:
 
-### Challenge 2: Secret Management
-
-**Problem**: Multiple credentials needed (FTP, S3, encryption key) with different purposes.
-
-**Solution**: Used a single Kubernetes secret (`s3-to-ftp-ftp-credentials`) for all s3-to-ftp configuration, and a separate secret (`longhorn-backup-s3-credentials`) for Longhorn's S3 authentication. This separation:
-- Keeps concerns separated (FTP config vs. S3 auth)
-- Allows independent rotation
-- Follows Kubernetes best practices
-
-### Challenge 3: Deployment Ordering
-
-**Problem**: Longhorn BackupTarget must be configured after s3-to-ftp is ready.
-
-**Solution**: Added explicit wait tasks:
-```yaml
-- name: Wait for s3-to-ftp pods to be ready
-  kubernetes.core.k8s_info:
-    wait_condition:
-      type: Ready
-      status: "True"
-    wait_timeout: 300
+```ini
+[box]
+type = ftp
+host = ftp.box.com
+explicit_tls = true
 ```
 
-This ensures the service is available before Longhorn tries to use it.
+### Challenge 2: Password Obscuring
 
-### Challenge 4: Conditional Encryption
+**Problem**: rclone requires passwords in config files to be obscured (base64-encoded).
 
-**Problem**: Encryption should be optional and only enabled when a key is provided.
+**Solution**: Use `rclone obscure` command in Ansible:
 
-**Solution**: Used Jinja2 conditionals in the deployment template and Ansible conditionals in tasks:
-- Template checks if encryption is enabled and key exists
-- Tasks only add encryption key to secret if conditions are met
-- Service gracefully handles missing encryption key (disables encryption)
+```yaml
+- name: Obscure rclone encryption key for crypt remote
+  command: rclone obscure "{{ rclone_encryption_key }}"
+  register: rclone_encryption_key_obscured
+```
 
-### Challenge 5: Service Discovery
+### Challenge 3: Encryption Key Management
 
-**Problem**: Longhorn needs to know where to find the s3-to-ftp service.
+**Problem**: Need a single, user-controlled encryption key for all backups.
 
-**Solution**: Used Kubernetes DNS for service discovery:
-- Service name: `s3-to-ftp`
-- Namespace: `longhorn-system`
-- DNS name: `s3-to-ftp.longhorn-system.svc.cluster.local:9000`
-- Configured in `AWS_ENDPOINTS` secret field
+**Solution**: Use rclone's crypt remote instead of RustFS KMS:
+- Single encryption key (`rclone_encryption_key`)
+- Client-side encryption (no dependency on cloud provider)
+- User controls the key entirely
 
-## Testing: Verification Steps
+### Challenge 4: Systemd Service Type
 
-To verify the integration is working:
+**Problem**: Docker containers need `Type=simple`, not `Type=notify`.
 
-1. **Check s3-to-ftp pod status**:
-   ```bash
-   kubectl get pods -n longhorn-system -l app=s3-to-ftp
-   ```
+**Solution**: Configured RustFS service with `Type=simple`:
 
-2. **Check BackupTarget configuration**:
-   ```bash
-   kubectl get backuptarget default -n longhorn-system -o yaml
-   ```
+```ini
+[Service]
+Type=simple
+ExecStart=/usr/bin/docker run ...
+```
 
-3. **Verify backup creation**:
-   - Create a test volume in Longhorn
-   - Create a backup via Longhorn UI
-   - Check FTP server for backup files
+### Challenge 5: Shell Escaping in Environment Variables
 
-4. **Test encryption** (if enabled):
-   - Download a backup file from FTP
-   - Verify it's encrypted (should not be readable as plain text)
-   - Restore backup in Longhorn (should decrypt automatically)
+**Problem**: Special characters in passwords break systemd service files.
 
-5. **Check service logs**:
-   ```bash
-   kubectl logs -n longhorn-system -l app=s3-to-ftp
-   ```
+**Solution**: Use Jinja2 `replace` filter to escape `%` characters:
+
+```jinja2
+-e 'RUSTFS_SECRET_KEY={{ rustfs_admin_password | replace('%', '%%') }}'
+```
 
 ## Automated Recurring Backups
 
-With the backup infrastructure in place, the next step was implementing **automated, scheduled backups** with retention policies. Longhorn supports RecurringJobs that automatically create backups or snapshots on a schedule.
+With the backup infrastructure in place, Longhorn RecurringJobs automatically create backups on a schedule. See the [previous post](/posts/homelab-pvc-migration-backup/) for details on configuring recurring backups.
 
-### RecurringJob Configuration
+**Key Points**:
+- RecurringJobs use UTC time (cluster timezone)
+- Volume CRDs must be labeled, not just PVCs
+- Enable `allow-recurring-job-while-volume-detached` for detached volumes
+- Full vs incremental backups are configurable
 
-Recurring backups are configured in `cluster/roles/longhorn/defaults/main.yaml` using the `recurring_backups` variable:
+## Monitoring and Maintenance
 
-```yaml
-recurring_backups:
-  - name: vm-backups
-    cron: "0 2 * * 0"  # Weekly on Sunday at 2:00 AM UTC (3:00 AM CET / 4:00 AM CEST)
-    task: "backup"
-    retain: 3
-    concurrency: 1
-    pvcs:
-      - namespace: homeassistant
-        name: homeassistant-system
-      - namespace: gaming
-        name: gaming-system
-      - namespace: gaming
-        name: gaming-compat-system
-```
+### Check Backup Status
 
-### Configuration Fields
-
-Each recurring backup job supports the following fields:
-
-- **`name`** (required): Unique identifier for the job, used as the RecurringJob CRD name
-- **`cron`** (required): Cron expression defining when the job runs (5 fields: minute hour day month weekday)
-- **`task`** (required): Operation type - `"backup"` for S3 backups or `"snapshot"` for local snapshots
-- **`retain`** (optional, default: 7): Number of backups/snapshots to keep. Older backups are automatically deleted
-- **`concurrency`** (optional, default: 1): Number of concurrent backup operations allowed
-- **`full_backup_interval`** (optional): Controls when full backups are performed vs incremental backups
-- **`pvcs`** (required): List of PVCs to back up, each with `namespace` and `name`
-
-### Full vs Incremental Backups
-
-Longhorn supports both full and incremental backups:
-
-- **Incremental backups** (default): Only changed data blocks are backed up, saving storage space
-- **Full backups**: All data blocks are backed up regardless of changes, enabling faster restores
-
-The `full_backup_interval` parameter controls this behavior:
-
-- **Not set**: Only incremental backups are performed (most storage efficient)
-- **`0`**: Every backup is a full backup (fastest restore, most storage)
-- **Positive integer** (e.g., `5`): After every N incremental backups, a full backup is performed
-
-**Example**: With `full_backup_interval: 5`:
-1. First backup: Full (base)
-2. Backups 2-6: Incremental (depend on backup 1)
-3. Backup 7: Full (after 5 incrementals)
-4. Backups 8-12: Incremental (depend on backup 7)
-5. And so on...
-
-### Retention Policy Considerations
-
-When using `full_backup_interval`, it's important to ensure `retain > full_backup_interval` (strictly greater):
-
-- **Why**: If `retain <= full_backup_interval`, when the oldest full backup is deleted, all incremental backups that depend on it become orphaned
-- **What happens**: Longhorn automatically cleans up orphaned incrementals, but you end up with fewer backups than your `retain` setting specifies
-- **Example**: With `retain: 4, full_backup_interval: 3`, you might end up with only 2 backups (1 full + 1 incremental) instead of 4
-
-**Good configurations**:
-- `retain: 7, full_backup_interval: 5` ✓ (always have full backup + incrementals)
-- `retain: 10, full_backup_interval: 7` ✓ (safe margin)
-
-**Problematic configurations**:
-- `retain: 4, full_backup_interval: 3` ⚠ (inefficient - orphaned incrementals cleaned up)
-- `retain: 3, full_backup_interval: 3` ✗ (may lose full backup entirely)
-
-### Implementation Details
-
-The Ansible role implements recurring backups through several tasks:
-
-1. **Validation**: Comprehensive validation ensures:
-   - Configuration structure is correct
-   - Required fields are present
-   - Cron format is valid (5 fields)
-   - Task is "backup" or "snapshot"
-   - Job names are unique
-   - PVCs exist and have required fields
-   - `retain > full_backup_interval` when `full_backup_interval` is set
-
-2. **RecurringJob Creation**: Creates Longhorn RecurringJob CRDs with:
-   - Cron schedule
-   - Task type (backup/snapshot)
-   - Retention count
-   - Concurrency limit
-   - Full backup interval (if specified)
-
-3. **PVC Labeling**: Labels PVCs with `recurring-job.longhorn.io/<job-name>` to associate them with the recurring job
-
-4. **Cleanup**: Uninstall tasks remove labels from PVCs and optionally delete RecurringJobs
-
-### Example Configuration
-
-Here's a complete example with multiple backup jobs:
-
-```yaml
-recurring_backups:
-  - name: daily-backup
-    cron: "0 2 * * *"      # Daily at 2:00 AM
-    task: "backup"
-    retain: 7
-    concurrency: 1
-    full_backup_interval: 5  # Full backup after every 5 incrementals
-    pvcs:
-      - namespace: gaming
-        name: gaming-data
-      - namespace: gaming
-        name: gaming-system
-
-  - name: weekly-backup
-    cron: "0 2 * * 0"      # Weekly on Sunday at 2:00 AM UTC (3:00 AM CET / 4:00 AM CEST)
-    task: "backup"
-    retain: 4
-    concurrency: 1
-    # No full_backup_interval - only incrementals (weekly schedule, so first is full)
-    pvcs:
-      - namespace: homeassistant
-        name: homeassistant-system
-```
-
-### Verification
-
-To verify recurring backups are working:
-
-1. **Check RecurringJobs**:
-   ```bash
-   kubectl get recurringjobs -n longhorn-system
-   ```
-
-2. **Check PVC labels**:
-   ```bash
-   kubectl get pvc -n gaming --show-labels
-   # Should show: recurring-job.longhorn.io/daily-backup=true
-   ```
-
-3. **Monitor backup creation**:
-   - Check Longhorn UI for backup history
-   - Verify backups appear in FTP storage
-   - Confirm retention policy is working (old backups deleted)
-
-4. **Check backup types**:
-   - Verify full backups are created at the specified interval
-   - Confirm incremental backups are created between full backups
-
-### Backup Failure Behavior
-
-Longhorn handles backup failures in a straightforward manner:
-
-- **No Automatic Retry**: If a scheduled backup fails, Longhorn does NOT automatically retry the failed backup. It waits for the next scheduled run according to the cron schedule.
-- **Next Scheduled Run**: After a failure, Longhorn will attempt the backup again only at the next scheduled time. For example, if a weekly backup fails on Sunday at 2 AM UTC, the next attempt will be the following Sunday at 2 AM UTC.
-- **Failure Logging**: Backup failures are recorded in Longhorn's logs and metrics, making it important to monitor these for timely detection.
-
-This behavior emphasizes the importance of:
-- **Monitoring and Alerting**: Setting up alerts to detect backup failures immediately
-- **Manual Intervention**: For critical backups, you may need to manually trigger a backup if a scheduled one fails
-- **Backup Frequency**: Consider backup frequency when designing schedules - more frequent backups reduce the impact of a single failure
-
-### Manual Backup Behavior
-
-Manual backups (created through the Longhorn UI or CLI) behave differently from RecurringJob backups:
-
-- **Independent of RecurringJobs**: Manual backups are NOT associated with any RecurringJob, even if they're created for PVCs that have RecurringJob labels.
-- **Not Counted in Retention**: Manual backups do NOT count toward the `retain` limit of RecurringJobs. They exist independently.
-- **Not Automatically Cleaned Up**: Manual backups are NOT automatically deleted by RecurringJob retention policies. They persist until manually deleted.
-- **Use Cases**: Manual backups are useful for:
-  - Creating ad-hoc backups before major changes or updates
-  - Testing backup and restore procedures
-  - Creating one-off backups for specific purposes
-
-**Example**: If you have a RecurringJob with `retain: 7` that creates 7 scheduled backups, and you create 3 manual backups, you'll have 10 total backups (7 scheduled + 3 manual). The manual backups won't be cleaned up when the RecurringJob retention policy runs.
-
-### Troubleshooting RecurringJob Backup Issues
-
-During implementation and testing, we discovered three critical issues that can prevent RecurringJobs from creating backups:
-
-#### Issue 1: Timezone Mismatch
-
-**Problem**: Cron expressions in RecurringJobs use **UTC time** (the cluster timezone), not local time. If you configure a cron expression using local time, the backup will run at the wrong time or not at all.
-
-**Symptoms**:
-- RecurringJob shows `executionCount: 1` but no backups are created
-- Backups run at unexpected times
-- RecurringJob never executes
-
-**Solution**: Always use UTC time for cron expressions. For example:
-- Local time 3 AM CET (UTC+1) = `0 2 * * 0` (2 AM UTC)
-- Local time 3 AM CEST (UTC+2) = `0 1 * * 0` (1 AM UTC)
-
-**Verification**:
 ```bash
-# Check cluster timezone
-kubectl exec -n longhorn-system -l app=longhorn-manager -- date
+# Longhorn UI: View backup history and status
+# Navigate to: http://longhorn.lab.x.y.z
 
-# Check RecurringJob cron (should be UTC)
-kubectl get recurringjob -n longhorn-system vm-backups -o jsonpath='{.spec.cron}'
+# Check RustFS disk usage
+ssh backup1.lab.x.y.z
+df -h /mnt/backup-hdd
+
+# Check rclone sync status
+systemctl status rclone-sync.timer
+journalctl -u rclone-sync.service -n 50
 ```
 
-#### Issue 2: Missing Volume CRD Labels
+### Backup Verification
 
-**Problem**: Longhorn requires RecurringJob labels on **Volume CRDs**, not just PVCs. The Ansible role was only labeling PVCs, causing RecurringJobs to find "0 volumes" even when PVCs were correctly labeled.
+Regularly verify backups are working:
 
-**Symptoms**:
-- RecurringJob logs show: `Found 0 volumes with recurring job <job-name>`
-- PVCs have correct labels but backups don't run
-- RecurringJob executes but creates no backups
-
-**Solution**: The Ansible role now labels both PVCs and Volume CRDs. Volume CRD names match the PV's `spec.csi.volumeHandle` value.
-
-**Verification**:
-```bash
-# Check PVC labels
-kubectl get pvc -n gaming gaming-system --show-labels
-
-# Check Volume CRD labels (volume name = PV's volumeHandle)
-kubectl get volume -n longhorn-system <volume-name> --show-labels
-```
-
-**Implementation**: The role now:
-1. Gets the PV bound to each PVC
-2. Extracts the `volumeHandle` from the PV's CSI spec
-3. Labels the Volume CRD with `recurring-job.longhorn.io/<job-name>: enabled`
-
-#### Issue 3: Detached Volumes Blocking Backups
-
-**Problem**: By default, Longhorn's `allow-recurring-job-while-volume-detached` setting is `false`, preventing backups of detached volumes. Many volumes are detached when not actively mounted by pods.
-
-**Symptoms**:
-- RecurringJob logs show: `Cannot create job for <volume> volume in state detached`
-- Backups fail for volumes that aren't currently attached
-- RecurringJob executes but finds "0 volumes" due to filtering
-
-**Solution**: Enable the `allow-recurring-job-while-volume-detached` setting:
-
-```yaml
-# In cluster/roles/longhorn/tasks/install.yaml
-- name: Enable recurring jobs for detached volumes
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: longhorn.io/v1beta2
-      kind: Setting
-      metadata:
-        name: allow-recurring-job-while-volume-detached
-        namespace: "{{ longhorn_namespace }}"
-      value: "true"
-```
-
-**Verification**:
-```bash
-kubectl get settings.longhorn.io -n longhorn-system allow-recurring-job-while-volume-detached -o jsonpath='{.value}'
-# Should output: true
-```
-
-#### Diagnostic Checklist
-
-If RecurringJobs aren't creating backups, check:
-
-1. **Timezone**: Verify cron uses UTC time
-   ```bash
-   kubectl get recurringjob -n longhorn-system <job-name> -o jsonpath='{.spec.cron}'
-   ```
-
-2. **Volume Labels**: Ensure Volume CRDs (not just PVCs) have labels
-   ```bash
-   kubectl get volumes -n longhorn-system -l recurring-job.longhorn.io/<job-name>=enabled
-   ```
-
-3. **Detached Volume Setting**: Verify the setting is enabled
-   ```bash
-   kubectl get settings.longhorn.io -n longhorn-system allow-recurring-job-while-volume-detached
-   ```
-
-4. **RecurringJob Execution**: Check if the job is running
-   ```bash
-   kubectl get recurringjob -n longhorn-system <job-name> -o jsonpath='{.status.executionCount}'
-   ```
-
-5. **Longhorn Manager Logs**: Look for errors
-   ```bash
-   kubectl logs -n longhorn-system -l app=longhorn-manager --tail=100 | grep -i "recurring\|backup"
-   ```
-
-#### Fixes Applied
-
-All three issues have been addressed in the Ansible role:
-
-1. **Cron time documentation**: Updated to clarify UTC time requirement
-2. **Volume CRD labeling**: Added tasks to label Volume CRDs after PVC labeling
-3. **Detached volume setting**: Added task to enable `allow-recurring-job-while-volume-detached`
-
-These fixes ensure RecurringJobs work correctly for both attached and detached volumes, with proper timezone handling and complete labeling.
-
-### Monitoring and Alerting
-
-To ensure timely detection of backup failures, Grafana alerts are configured to monitor Longhorn backup operations:
-
-- **Alert Configuration**: A Grafana alert rule monitors Longhorn backup metrics for failures
-- **Notification Channel**: Alerts are sent via ntfy, providing push notifications to web and mobile devices
-- **Alert Details**: When a backup failure is detected, the alert includes:
-  - Description of the failure
-  - Reminder that failed backups are not automatically retried
-  - Link to Grafana for further investigation
-
-**Responding to Backup Failure Alerts**:
-
-1. **Check Longhorn UI**: Navigate to the Longhorn UI to view backup history and identify which backup failed
-2. **Review Logs**: Check Longhorn manager logs for detailed error messages:
-   ```bash
-   kubectl logs -n longhorn-system -l app=longhorn-manager --tail=100
-   ```
-3. **Investigate Root Cause**: Common causes include:
-   - Backup target (S3/FTP) connectivity issues
-   - Storage space issues
-   - Network problems
-   - Configuration errors
-4. **Manual Backup (if needed)**: For critical data, consider creating a manual backup immediately
-5. **Fix and Verify**: After resolving the issue, verify the next scheduled backup succeeds
-
-The alerting system helps ensure that backup failures are detected promptly, allowing for quick remediation before the next scheduled backup runs.
+1. **Check sync logs**: Ensure daily syncs are completing
+2. **Test restore**: Periodically restore a backup to verify integrity
+3. **Monitor disk usage**: Ensure HDD has sufficient space
+4. **Check encryption**: Verify encrypted files on Box.com cannot be read without the key
 
 ## Lessons Learned
 
-1. **S3 API Translation is Complex**: Implementing a full S3-compatible API requires handling many edge cases. The s3-to-ftp service focuses on the operations Longhorn actually uses.
+1. **RustFS is S3-Compatible**: RustFS provides a true S3-compatible API, making Longhorn integration seamless.
 
-2. **Secret Management is Critical**: Proper secret management (separate secrets, no logging, secure storage) is essential for production use.
+2. **Client-Side Encryption**: Using rclone's crypt remote gives full control over encryption without depending on cloud provider features.
 
-3. **Deployment Ordering Matters**: Services must be ready before dependent components try to use them. Explicit wait conditions prevent race conditions.
+3. **HDD Formatting**: Manual HDD formatting prevents accidental data loss during playbook runs.
 
-4. **Encryption Key Management**: Encryption keys must be:
-   - Generated securely
-   - Stored securely
-   - Backed up separately
-   - Rotated periodically
+4. **Password Obscuring**: rclone requires obscured passwords in config files - use `rclone obscure` command.
 
-5. **Service Discovery**: Kubernetes DNS makes service discovery simple, but the endpoint format must match what the client expects (S3 clients expect HTTP endpoints).
+5. **FTPS vs FTP**: Box.com requires FTPS (`explicit_tls = true`), not plain FTP.
 
-6. **Conditional Configuration**: Using Jinja2 and Ansible conditionals allows flexible configuration while maintaining idempotency.
+6. **Systemd Timers**: Use systemd timers for scheduled tasks instead of cron for better integration.
 
-7. **Health Checks are Essential**: Liveness and readiness probes ensure the service is available and healthy before use.
+7. **Idempotent Playbooks**: Check for existing resources (buckets, mounts) before creating them.
 
-8. **Resource Limits**: Setting appropriate resource limits prevents the service from consuming excessive cluster resources.
+8. **Secret Management**: Use git-crypt or similar to encrypt secrets files in version control.
 
-9. **Timezone Awareness**: Cron expressions in Kubernetes/Longhorn use UTC time (cluster timezone), not local time. Always convert local times to UTC when configuring schedules.
+9. **Single Encryption Key**: Using rclone crypt remote provides a single, user-controlled encryption key.
 
-10. **Volume CRD vs PVC Labels**: Longhorn RecurringJobs require labels on Volume CRDs, not just PVCs. The Volume CRD name matches the PV's `spec.csi.volumeHandle` value.
-
-11. **Detached Volume Backups**: By default, Longhorn won't backup detached volumes. Enable `allow-recurring-job-while-volume-detached` to allow backups of volumes that aren't currently mounted.
-
-12. **Systematic Troubleshooting**: When RecurringJobs don't work, check: timezone (UTC), Volume CRD labels, detached volume setting, and Longhorn manager logs for specific error messages.
+10. **Testing**: Always test backup and restore procedures before relying on them in production.
 
 ## What's Next?
 
-With FTP-backed, encrypted backups, automated scheduling, and monitoring/alerting in place, the backup infrastructure is comprehensive. Future enhancements could include:
+With RustFS, encrypted off-site backups, and automated Longhorn integration in place, the backup infrastructure is comprehensive. Future enhancements could include:
 
-1. **Backup Verification**: Add automated integrity checks for backups
-2. **Multi-Region Backups**: Store backups in multiple FTP locations for redundancy
+1. **Backup Verification**: Automated integrity checks for backups
+2. **Multi-Region Sync**: Sync to multiple cloud providers for redundancy
 3. **Backup Encryption Key Rotation**: Implement procedures for rotating encryption keys
 4. **Disaster Recovery Testing**: Regularly test full cluster recovery from backups
-5. **Backup Performance Optimization**: Tune backup schedules and concurrency based on cluster load
-6. **Advanced Alerting**: Add alerts for backup age (warn if no successful backup in X days) or backup size anomalies
+5. **Backup Performance Optimization**: Tune sync schedules based on cluster load
+6. **Monitoring and Alerting**: Add alerts for sync failures or disk space issues
+7. **Backup Retention Policies**: Implement automated cleanup of old backups
 
 ## Conclusion
 
-Integrating s3-to-ftp with Longhorn enables automated, encrypted backups to unlimited FTP storage. The key takeaways:
+The complete backup infrastructure provides:
 
-- **S3-to-FTP Bridge**: A custom service translates S3 APIs to FTP operations
-- **Seamless Integration**: Longhorn works with the service as if it were a real S3 endpoint
-- **Encryption Support**: Backups can be encrypted at rest without encrypting running volumes
-- **Automated Scheduling**: RecurringJobs automatically create backups on a schedule with retention policies
-- **Full/Incremental Backups**: Configurable backup types balance storage efficiency and restore speed
-- **Monitoring and Alerting**: Grafana alerts notify of backup failures via ntfy, ensuring timely detection
-- **Ansible Automation**: The entire setup is automated via Ansible, following established patterns
-- **Security Best Practices**: Proper secret management and encryption key handling
-- **Comprehensive Validation**: Configuration validation ensures backup jobs are correctly configured
+- **On-Premises S3 Storage**: RustFS running on Raspberry Pi with 4TB HDD
+- **Seamless Longhorn Integration**: Direct S3 API connection for automated backups
+- **Encrypted Off-Site Storage**: rclone syncs encrypted backups to Box.com FTP daily
+- **Full Automation**: Ansible playbooks handle all setup and configuration
+- **Single Encryption Key**: User-controlled encryption key for all backups
+- **Production Ready**: Robust, tested, and maintainable solution
 
-The integration provides a production-ready backup solution that leverages unlimited FTP storage while maintaining security through encryption. With automated, scheduled backups, retention policies, and monitoring/alerting in place, the homelab now has robust, comprehensive data protection capabilities with proactive failure detection.
+The integration provides a production-ready backup solution that combines local performance with cloud-based disaster recovery, all secured with client-side encryption. With automated, scheduled backups, encrypted off-site storage, and comprehensive Ansible automation, the homelab now has robust, comprehensive data protection capabilities.
 
 ---
 
-*This is the eighth post in our "K8s Homelab" series. With automated, scheduled, encrypted backups and retention policies configured, the homelab now has comprehensive, production-ready data protection. In future posts, we'll cover additional infrastructure components, monitoring enhancements, and automation improvements.*
-
+*This is the eighth post in our "K8s Homelab" series. With RustFS, encrypted off-site backups, and automated Longhorn integration configured, the homelab now has comprehensive, production-ready data protection. In future posts, we'll cover additional infrastructure components, monitoring enhancements, and automation improvements.*
