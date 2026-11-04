@@ -1,5 +1,5 @@
 # Base URL for the website
-baseURL = 'http://blog.louisfradin.com/'
+baseURL = 'https://blog.lerenn.dev/'
 
 # Website title
 title = 'Louis FRADIN'
