@@ -7,3 +7,23 @@ code {
     width: 140px;
     height: 140px;
 }
+
+// Job title under the name, in the accent color so it reads as a position.
+.author .author-position {
+    margin: 0.6rem auto 0;
+    font-size: $small-font-size;
+    font-weight: 500;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: $text-link-blue;
+}
+
+html.dark .author .author-position {
+    color: $dark-text-link-blue;
+}
+
+@media (prefers-color-scheme: dark) {
+    html:not(.light) .author .author-position {
+        color: $dark-text-link-blue;
+    }
+}

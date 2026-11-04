@@ -62,6 +62,7 @@ disqusShortname = 'louisfradin'
   intro = "Lerenn"
   name = "Louis FRADIN"
   description = "Louis Fradin"
+  position = "Backend | DevOps | Kubernetes Engineer" # shown under the description, styled as a job title
 
 # Allow to override webmanifest options
 [params.webmanifest]
