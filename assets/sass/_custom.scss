@@ -1,3 +1,9 @@
 code {
     font-size: 14px;
 }
+
+// Homepage photo at twice the theme's 70px.
+.author .author-avatar {
+    width: 140px;
+    height: 140px;
+}
